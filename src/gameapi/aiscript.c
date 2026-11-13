@@ -1440,11 +1440,12 @@ static __declspec(noinline) AICONDITION_PC *AIScriptProcessStateConditions(AISYS
     f32 comparison_value;
     AICONDITION_EVAL_PC comparison_fn;
     i32 comparison_passed;
+    SAGA_VR_CONDITION_VALUE_INIT(condition_value);
     if (processor == NULL || conditions == NULL)
         return NULL;
     condition = (AICONDITION_PC *)NuLinkedListGetHead(conditions);
     while (condition != NULL) {
-        condition_value = 0.0f;
+        SAGA_VR_CONDITION_VALUE_RESET(condition_value);
         comparison_passed = 0;
         if (condition->definition != NULL) {
             if (condition->definition->eval_fn != NULL) {
@@ -1941,6 +1942,7 @@ static NUFPAR_PC *AIScriptOpenParserPc(void *pak, char *filename, char *path) {
         item = NuFilePakGetItem(pak, filename);
         if (item != 0) {
             NuFilePakGetItemInfo(pak, item, &data, &size);
+            SAGA_VR_AI_DUMP(path, filename, data, size);
             file = NuMemFileOpen(data, size, 0);
             if (file != 0) {
                 return NuFParOpen(file);

@@ -82,6 +82,8 @@ extern "C" {
     i32 __cdecl SagaVrStatusIdle(i32 idle);
     void __cdecl SagaVrAiState(AISCRIPTPROCESS_PC *processor, AISTATE_PC *state);
     i32 __cdecl SagaVrIntroGate(void);
+    void __cdecl SagaVrAiDump(const char *path, const char *name, const void *data, i32 size);
+    void __cdecl SagaVrTriggerTrace(i32 index, u32 occupied, u32 flags, i32 complete, i32 count, const i8 *indices);
 #ifdef __cplusplus
 }
 #endif
@@ -173,6 +175,17 @@ extern "C" {
 #define SAGA_VR_AI_STATE(processor, state) SagaVrAiState(processor, state)
 /* Start-up: "A long time ago..." waits until the RanitaVR plate has been shown after the legal screen. */
 #define SAGA_VR_INTRO_GATE() SagaVrIntroGate()
+/* AIScriptProcessStateConditions (non-matching in saga-pc): retail keeps the condition value across the list, so
+ * "PreviousResult" (a condition without an eval function) reads the previous condition's value; upstream saga-pc
+ * has the same fix. Reset per condition, it was always 0 and Maul stalled after his third platform. */
+#define SAGA_VR_CONDITION_VALUE_INIT(value) (value) = 0.0f
+#define SAGA_VR_CONDITION_VALUE_RESET(value) ((void)0)
+/* AI script loading: copies each level script to logi_scripts next to the executable (diagnostic). */
+#define SAGA_VR_AI_DUMP(path, name, data, size) SagaVrAiDump(path, name, data, size)
+/* AITriggerSetSysProcess: logs each change of a trigger set (pads, levers the party helps with): occupied pads,
+ * completion and which character is sent to which pad (diagnostic). */
+#define SAGA_VR_TRIGGER_TRACE(index, occupied, flags, complete, count, indices)                                        \
+    SagaVrTriggerTrace(index, occupied, flags, complete, count, indices)
 /* ZapCode (Jawa, Watto, Ugnaught, R2): the zapper only reaches a droid 0.6 units away, nearly touching. In first
  * person, with the target hard to judge, player 0 reaches 2 units. Squared distance. */
 #define SAGA_VR_ZAP_RANGE(object, original)                                                                            \
@@ -180,6 +193,10 @@ extern "C" {
 #else
 #define SAGA_VR_AI_STATE(processor, state) ((void)0)
 #define SAGA_VR_INTRO_GATE() 1
+#define SAGA_VR_CONDITION_VALUE_INIT(value) ((void)0)
+#define SAGA_VR_CONDITION_VALUE_RESET(value) (value) = 0.0f
+#define SAGA_VR_AI_DUMP(path, name, data, size) ((void)0)
+#define SAGA_VR_TRIGGER_TRACE(index, occupied, flags, complete, count, indices) ((void)0)
 #define SAGA_VR_ZAP_RANGE(object, original) (original)
 #define SAGA_VR_AI_MISSING(kind, name)
 #define SAGA_VR_TURRET_DRAW_POS(object, fallback, original) (original)

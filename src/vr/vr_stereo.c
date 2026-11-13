@@ -99,7 +99,7 @@ static f32 SagaVrIniFloat(const char *ini, const char *key, f32 fallback) {
 }
 
 /* saga_vr.ini ai_trace: comma-separated parts of AI script names whose state changes are logged ("" = none). */
-static char SagaVrAiTrace[256] = "Maul,Jedi,Party";
+static char SagaVrAiTrace[256] = "Maul,Jedi,Party,Level";
 
 static i32 SagaVrAiTraced(const char *name) {
     const char *part = SagaVrAiTrace;
@@ -927,4 +927,62 @@ void __cdecl SagaVrSceneBuffer(PC_BUFFER_RESOURCE_PC **resource, u32 size, i32 i
         else
             LOG_INFO("VR: scene buffer created on retry %d (pool %d)", attempt + 1, pool);
     }
+}
+
+/* Copies an AI script as the game loads it (level path + name) to log\ai_scripts next to the executable, once per
+ * file: the scripts live inside the game's .DAT files, and a stalled character (Maul's last platform) needs the
+ * conditions its state waits for. */
+void __cdecl SagaVrAiDump(const char *path, const char *name, const void *data, i32 size) {
+    char file_path[MAX_PATH], *slash, *p;
+    FILE *file;
+    if (data == NULL || size <= 0 || name == NULL)
+        return;
+    GetModuleFileNameA(NULL, file_path, sizeof(file_path));
+    slash = strrchr(file_path, '\\');
+    strcpy(slash != NULL ? slash + 1 : file_path, "log\\ai_scripts");
+    CreateDirectoryA(file_path, NULL);
+    strcat(file_path, "\\");
+    p = file_path + strlen(file_path);
+    _snprintf(p, sizeof(file_path) - (p - file_path) - 1, "%s_%s", path != NULL ? path : "", name);
+    file_path[sizeof(file_path) - 1] = 0;
+    for (; *p != 0; ++p)
+        if (*p == '\\' || *p == '/' || *p == ':')
+            *p = '_';
+    if (GetFileAttributesA(file_path) != INVALID_FILE_ATTRIBUTES)
+        return;
+    file = fopen(file_path, "wb");
+    if (file == NULL)
+        return;
+    fwrite(data, 1, (size_t)size, file);
+    fclose(file);
+}
+
+/* Trigger sets (two-pad puzzles and the like): logs a set whenever its occupied pads, completion or helper
+ * assignments change, with the characters assigned (object index, character id) and the player's position. */
+void __cdecl SagaVrTriggerTrace(i32 index, u32 occupied, u32 flags, i32 complete, i32 count, const i8 *indices) {
+    static u32 last_occupied[32], last_complete[32];
+    static i8 last_indices[32][8];
+    static i32 seen[32];
+    char text[160];
+    i32 i, length;
+    GAMEOBJECT *player = (GAMEOBJECT *)Player[0];
+    if (index < 0 || index >= 32 || count < 0 || count > 8)
+        return;
+    if (seen[index] && last_occupied[index] == occupied && last_complete[index] == (u32)complete &&
+        memcmp(last_indices[index], indices, (size_t)count) == 0)
+        return;
+    seen[index] = 1;
+    last_occupied[index] = occupied;
+    last_complete[index] = (u32)complete;
+    memcpy(last_indices[index], indices, (size_t)count);
+    length = 0;
+    text[0] = 0;
+    for (i = 0; i < count && length < (i32)sizeof(text) - 24; ++i)
+        length += _snprintf(text + length, sizeof(text) - length - 1, " %d", indices[i] >= 0
+                                                                             ? (i32)Obj[indices[i]].id
+                                                                             : -1);
+    LOG_INFO("VR trigger set %d: %d pads, occupied 0x%x, flags 0x%x, complete %d, helpers (character ids):%s; player at "
+             "(%.2f, %.2f, %.2f)",
+             index, count, occupied, flags, complete, text, player != NULL ? player->position.x : 0.0f,
+             player != NULL ? player->position.y : 0.0f, player != NULL ? player->position.z : 0.0f);
 }

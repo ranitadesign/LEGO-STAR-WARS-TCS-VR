@@ -40,6 +40,10 @@ static GAMEOBJECT *SagaVrSaberPlayer(void) {
         player->character_data->game_character->streak_joints[0][0] < 0 ||
         player->character_data->game_character->streak_joints[0][1] < 0)
         return NULL;
+    /* Riding (a dewback, a bantha...): the controlled object is the mount, whose bite trail uses the same
+     * streak joints. It is not a blade: the game's own attack must keep its hit. */
+    if (player->rider != NULL)
+        return NULL;
     return player;
 }
 
@@ -1452,9 +1456,9 @@ void __cdecl SagaVrBoltAim(GAMEOBJECT *object, NUVEC *shot_position, NUMTX *matr
         return;
     for (c = 0; c < 3; ++c)
         forward[c] /= length;
-    /* Always along the controller, tilted like the posed weapon (SagaVrBlasterPitchUsed). */
-    from_barrel = 0;
-    (void)SagaVrBarrelAxis;
+    /* Along the visible barrel (the earlier fix: the tilted controller axis sent shots diagonally up); the controller
+     * axis, tilted like the posed weapon, only when no barrel axis is found. */
+    from_barrel = SagaVrBarrelAxis(object, forward);
     delta[0] = shot_position->x - hand[12];
     delta[1] = shot_position->y - hand[13];
     delta[2] = shot_position->z - hand[14];
@@ -1534,6 +1538,7 @@ static f32 SagaVrSegmentDistance(const f32 *p0, const f32 *p1, const f32 *q0, co
 #define SAGA_VR_BLOCK_RADIUS 0.06f /* bolts: blade half-thickness plus slack, game units (a minifig is ~0.42) */
 #define SAGA_VR_PARRY_RADIUS 0.2f  /* blade against blade */
 #define SAGA_VR_GUARD_RADIUS 0.15f /* blade across the line from their blade to the player */
+#define SAGA_VR_STRIKE_RANGE 0.35f /* their blade this close to the player body: a blow that can land */
 static void SagaVrBlockedMessage(void);
 
 void __cdecl SagaVrSaberDeflect(void) {
@@ -1614,6 +1619,15 @@ void SagaVrBlockSabre(GAMEOBJECT *object) {
     memcpy(tip, &player->locator_matrices[mine->streak_joints[0][1]].m30, sizeof(tip));
     memcpy(their_base, &object->locator_matrices[theirs->streak_joints[0][0]].m30, sizeof(their_base));
     memcpy(their_tip, &object->locator_matrices[theirs->streak_joints[0][1]].m30, sizeof(their_tip));
+    /* Only a blow that can reach the player: sabre_flags stays set through a whole combo, so without this every
+     * enemy swing anywhere ahead counted as blocked ("Blocked!" all the time). */
+    {
+        f32 body[3];
+        memcpy(body, &player->collision_position, sizeof(body));
+        if (SagaVrSegmentDistance(their_base, their_tip, body, body, &s, hit) >
+            SAGA_VR_STRIKE_RANGE * SAGA_VR_STRIKE_RANGE)
+            return;
+    }
     if (SagaVrSegmentDistance(their_base, their_tip, base, tip, &s, hit) >
         SAGA_VR_PARRY_RADIUS * SAGA_VR_PARRY_RADIUS) {
         /* Guard: the VR blade held across the way from their blade to the player's body also stops the blow
@@ -1690,20 +1704,22 @@ i32 __cdecl SagaVrSlamPress(void) {
 
 /* Characters with a gun (no saber) punch with the left hand: a fast swing (over SAGA_VR_PUNCH_SPEED m/s) that
  * reaches an enemy hits it once per SAGA_VR_PUNCH_COOLDOWN, like the game's own close-range brawl. */
-#define SAGA_VR_PUNCH_SPEED 1.5f
+#define SAGA_VR_PUNCH_SPEED 1.2f
+#define SAGA_VR_PUNCH_WINDOW 0.15f /* seconds a fast swing stays a punch (the hand slows down at the impact) */
 #define SAGA_VR_PUNCH_COOLDOWN 0.4f
-#define SAGA_VR_PUNCH_REACH 0.12f /* game units beyond the target's collision radius */
+#define SAGA_VR_PUNCH_REACH 0.12f /* game units beyond the target's collision radius, along its whole height */
 
 void __cdecl SagaVrPunchUpdate(void) {
-    static f32 previous[3], previous_time = -1.0f, last_hit = -10.0f;
+    static f32 previous[3], previous_time = -1.0f, last_hit = -10.0f, last_fast = -10.0f;
     SAGA_VR_CONTROL *control = SagaVrGetControl();
     GAMEOBJECT *player = (GAMEOBJECT *)Player[0], *target;
+    i32 in_hub = HUB_ADATA != NULL && WORLD != NULL && WORLD->area == HUB_ADATA;
     PLAYERCHARACTERCONFIG_PC *data;
-    f32 hand[16], now = GlobalTimer.time_elapsed, speed, delta[3], reach;
+    f32 hand[16], now = GlobalTimer.time_elapsed, speed, delta[3], reach, from[3], bottom[3], top[3], closest[3], s;
     i32 i, c;
     if (player == NULL || !control->first_person || !SagaVrFirstPersonActive() || !control->hand_valid[0] ||
         SagaVrCinema() || player->character_data == NULL || player->character_data->game_character == NULL ||
-        player->dead != 0 || !SagaVrHandWorld(0, hand)) {
+        player->dead != 0 || player->rider != NULL || !SagaVrHandWorld(0, hand)) {
         previous_time = -1.0f;
         return;
     }
@@ -1721,18 +1737,32 @@ void __cdecl SagaVrPunchUpdate(void) {
     for (c = 0; c < 3; ++c)
         delta[c] = hand[12 + c] - previous[c];
     speed = SagaVrLength(delta) / (now - previous_time) / (control->fp_world_scale > 0.0f ? control->fp_world_scale : 1.0f);
+    memcpy(from, previous, sizeof(from));
     memcpy(previous, hand + 12, sizeof(previous));
     previous_time = now;
-    if (speed < SAGA_VR_PUNCH_SPEED || (now - last_hit < SAGA_VR_PUNCH_COOLDOWN && now >= last_hit))
+    /* A jump of the hand (character change, recentre, tracking loss) is not a swing. */
+    if (speed > 20.0f) {
+        last_fast = -10.0f;
+        return;
+    }
+    if (speed >= SAGA_VR_PUNCH_SPEED)
+        last_fast = now;
+    if (now - last_fast > SAGA_VR_PUNCH_WINDOW || now < last_fast ||
+        (now - last_hit < SAGA_VR_PUNCH_COOLDOWN && now >= last_hit))
         return;
     for (i = 0, target = Obj; i < HIGHGAMEOBJECT; ++i, ++target) {
-        if (target == player || target->dead != 0 || (target->flags_1fc_word & 0x1001) != 0x1001 ||
-            ((target->flags_1f8 ^ player->flags_1f8) & 0x10001) == 0)
+        /* Enemies in levels; in the cantina anyone but the players (the original lets you hit them there too). */
+        if (target == player || target == (GAMEOBJECT *)Player[1] || (target->flags_1fc_word & 0x80) != 0 ||
+            target->dead != 0 || (target->flags_1fc_word & 0x1001) != 0x1001 ||
+            (!in_hub && ((target->flags_1f8 ^ player->flags_1f8) & 0x10001) == 0))
             continue;
-        for (c = 0; c < 3; ++c)
-            delta[c] = (&target->collision_position.x)[c] - hand[12 + c];
+        /* The hand's path this frame against the target's upright body (head to feet), not just its centre. */
+        memcpy(bottom, &target->collision_position, sizeof(bottom));
+        memcpy(top, &target->collision_position, sizeof(top));
+        bottom[1] -= target->bounds_half_height;
+        top[1] += target->bounds_half_height;
         reach = target->collision_radius + SAGA_VR_PUNCH_REACH;
-        if (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2] > reach * reach)
+        if (SagaVrSegmentDistance(from, hand + 12, bottom, top, &s, closest) > reach * reach)
             continue;
         last_hit = now;
         LOG_INFO("VR punch: character %d at %.2f m/s", (i32)target->id, speed);

@@ -304,6 +304,20 @@ void __cdecl SagaVrFrameEnd(void) {
     SagaVrPunchUpdate();
     SagaVrRegisterStatusScreen();
     SagaVrLogFloor(control);
+    {
+        /* Music off: retail only stops starting new tracks (SfxCheckMusicOnOff is empty), so the track that is
+         * playing goes on. Keep the music classes silent while the option is off and restore them when it is on. */
+        static i32 was_muted = 0;
+        if (Game.options_save.music_enabled == 0) {
+            OPTIONSSAVE silent = Game.options_save;
+            silent.music_volume = 0;
+            GameSetMusicVolume(&silent);
+            was_muted = 1;
+        } else if (was_muted) {
+            GameSetMusicVolume(&Game.options_save);
+            was_muted = 0;
+        }
+    }
     if (Player[0] != NULL) {
         GAMEOBJECT *player = (GAMEOBJECT *)Player[0];
         control->player_position[0] = player->position.x;
@@ -353,6 +367,24 @@ void __cdecl SagaVrFrameEnd(void) {
                      (i32)player->current_hp, (i32)player->character_context, (i32)player->model_draw_result, firing,
                      enemy_shots, returned_shots);
             enemy_shots = returned_shots = 0;
+        }
+        /* Party following (diagnostic): where the AI path system places each player (path, connection, last point
+         * on the path) and where the partner is. */
+        if (control->frame % 120 == 0) {
+            for (i = 0; i < 2; ++i) {
+                GAMEOBJECT *who = (GAMEOBJECT *)Player[i];
+                AIPACKET_PC *packet;
+                if (who == NULL)
+                    continue;
+                packet = &who->ai_packet;
+                LOG_INFO("VR path: player %d at (%.2f %.2f %.2f) ai %d path %p cnx %p flags 0x%x last (%.2f %.2f %.2f) "
+                         "origin (%.2f %.2f %.2f) stopped %d target %p",
+                         i, who->position.x, who->position.y, who->position.z, (who->flags_1fc_word & 0x80) == 0,
+                         (void *)packet->path_info.path, (void *)packet->path_info.connection,
+                         (u32)packet->path_info.flags_word, packet->last_path_position.x, packet->last_path_position.y,
+                         packet->last_path_position.z, packet->terrain_origin.x, packet->terrain_origin.y,
+                         packet->terrain_origin.z, (i32)packet->movement_stopped, (void *)packet->movement_target);
+            }
         }
     }
     if (control->unlock_all && WORLD != NULL && WORLD->current_level != NULL && WORLD->current_level != TITLES_LDATA &&

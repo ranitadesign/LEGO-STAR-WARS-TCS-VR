@@ -1,4 +1,5 @@
 #include "saga.h"
+#include "vr/vr.h"
 typedef struct trigger_lever_pc_s {
     u8 unknown000[0x94];
     u16 flags;
@@ -284,6 +285,7 @@ void __cdecl AITriggerSetSysProcess(TRIGGER_SYSTEM_PC *system) {
                 AITRIGGER_RELEASE(system, set, index);
             }
         }
+        SAGA_VR_TRIGGER_TRACE(set_index, set->occupied, set->flags, complete, set->trigger_count, set->trigger_indices);
         set->flags &= ~2;
     }
 }
