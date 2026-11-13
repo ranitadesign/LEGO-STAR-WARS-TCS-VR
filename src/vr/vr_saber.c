@@ -1531,7 +1531,9 @@ static f32 SagaVrSegmentDistance(const f32 *p0, const f32 *p1, const f32 *q0, co
  * incoming bolt ends and a reflected copy owned by the player flies at the shooter (aimed with the
  * game's intercept when the shooter is alive, otherwise mirrored off the blade). Bolts the game marks
  * as not deflectable (0x40, e.g. rockets) still hit. */
-#define SAGA_VR_BLOCK_RADIUS 0.12f /* blade half-thickness plus generous slack, game units (a minifig is ~0.42); 0.06 was too strict */
+#define SAGA_VR_BLOCK_RADIUS 0.06f /* bolts: blade half-thickness plus slack, game units (a minifig is ~0.42) */
+#define SAGA_VR_PARRY_RADIUS 0.2f  /* blade against blade */
+#define SAGA_VR_GUARD_RADIUS 0.15f /* blade across the line from their blade to the player */
 static void SagaVrBlockedMessage(void);
 
 void __cdecl SagaVrSaberDeflect(void) {
@@ -1584,7 +1586,6 @@ void __cdecl SagaVrSaberDeflect(void) {
         angles.z = 0;
         NuMtxSetRotationXYVU0(&matrix, &angles);
         PlaySfx("SabDefBlas", &position); /* the game's sabre-deflects-blaster sound */
-        SagaVrBlockedMessage();
         Bolt_End(bolt, 0);
         reflected = Bolt_Add(player, &position, &matrix, bolt->type_id, 0);
         if (reflected != NULL)
@@ -1614,8 +1615,17 @@ void SagaVrBlockSabre(GAMEOBJECT *object) {
     memcpy(their_base, &object->locator_matrices[theirs->streak_joints[0][0]].m30, sizeof(their_base));
     memcpy(their_tip, &object->locator_matrices[theirs->streak_joints[0][1]].m30, sizeof(their_tip));
     if (SagaVrSegmentDistance(their_base, their_tip, base, tip, &s, hit) >
-        SAGA_VR_BLOCK_RADIUS * SAGA_VR_BLOCK_RADIUS * 4.0f)
-        return;
+        SAGA_VR_PARRY_RADIUS * SAGA_VR_PARRY_RADIUS) {
+        /* Guard: the VR blade held across the way from their blade to the player's body also stops the blow
+         * (their swing is an animation, so meeting the blade itself at the hit frame was nearly impossible). */
+        f32 their_middle[3], body[3];
+        i32 c;
+        for (c = 0; c < 3; ++c)
+            their_middle[c] = 0.5f * (their_base[c] + their_tip[c]);
+        memcpy(body, &player->collision_position, sizeof(body));
+        if (SagaVrSegmentDistance(base, tip, their_middle, body, &s, hit) > SAGA_VR_GUARD_RADIUS * SAGA_VR_GUARD_RADIUS)
+            return;
+    }
     object->sabre_flags &= (u8)~5;
     object->sabre_damage = 0;
     if (GlobalTimer.time_elapsed - clash_time > 0.25f || GlobalTimer.time_elapsed < clash_time) {

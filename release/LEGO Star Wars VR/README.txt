@@ -64,7 +64,7 @@ Right stick up/down .... free play: next / previous character
 A ...................... jump / confirm in menus
 Right trigger .......... attack / shoot
 Swing right hand ....... lightsaber swing
-Hold the blade in the way of a shot or a blade to block it ("Blocked!" shows)
+Hold the blade in the way of a shot to deflect it, or between you and an enemy blade to block it ("Blocked!")
 Double jump, then point the lit saber down ... Jedi ground slam
 Swing left hand ........ punch (characters with a gun) - hit an enemy within reach
 Right grip ............. lightsaber on / off
