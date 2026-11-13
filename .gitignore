@@ -1,0 +1,23 @@
+build/
+/lib/
+res/*
+!res/.gitignore
+!res/README.md
+__pycache__/
+*.pyc
+*.obj
+*.o
+*.exe
+*.dll
+*.pdb
+*.lib
+*.zip
+*.7z
+*.tar.gz
+*.tar.xz
+.DS_Store
+# Local permute bookkeeping from older loop versions
+/permute/
+
+# VR mod: the ready-to-play folder is part of the repository
+!release/**

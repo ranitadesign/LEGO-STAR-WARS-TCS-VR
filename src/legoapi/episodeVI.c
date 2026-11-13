@@ -1,0 +1,1476 @@
+#include "saga.h"
+#include <stdio.h>
+
+typedef struct SARLACC_DISCO_PC {
+    AIAREA_PC *area;
+    NUSPECIALHANDLE off[16], flash[16], select[16], on[16], finish[16];
+    GIZOBSTACLE *off_obstacle, *on_obstacle;
+    u8 panel_state[16];
+    i8 count, phase, first_panel, second_panel;
+    f32 timer, initial_height, height;
+    u8 reserved_3ec[4];
+    GIZAIMESSAGE *help_message, *complete_message, *state_message;
+    NUVEC *last_selected_position;
+} SARLACC_DISCO_PC;
+STATIC_ASSERT(sizeof(SARLACC_DISCO_PC) == 0x400);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, off) == 4);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, flash) == 0xc4);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, select) == 0x184);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, on) == 0x244);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, finish) == 0x304);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, panel_state) == 0x3cc);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, count) == 0x3dc);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, timer) == 0x3e0);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, initial_height) == 0x3e4);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, height) == 0x3e8);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, help_message) == 0x3f0);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, complete_message) == 0x3f4);
+STATIC_ASSERT(offsetof(SARLACC_DISCO_PC, state_message) == 0x3f8);
+typedef struct SARLACC_PACKET_VIEW_PC {
+    f32 height;
+    i16 off_mask, flash_mask, select_mask, on_mask, finish_mask, sound_mask;
+    u8 disco_active, reserved_11;
+    i16 completion_sound_played;
+} SARLACC_PACKET_VIEW_PC;
+STATIC_ASSERT(sizeof(SARLACC_PACKET_VIEW_PC) == 20);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, off_mask) == 4);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, flash_mask) == 6);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, select_mask) == 8);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, on_mask) == 0xa);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, finish_mask) == 0xc);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, sound_mask) == 0xe);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, disco_active) == 0x10);
+STATIC_ASSERT(offsetof(SARLACC_PACKET_VIEW_PC, completion_sound_played) == 0x12);
+#define SARLACC_PACKET ((SARLACC_PACKET_VIEW_PC *)sarlaccb_netpacket)
+f32 SarlaccDiscoBaseOffsetPc = -0.12f;
+
+static SARLACC_DISCO_PC sarlaccdisco = {0};
+NUSPECIALHANDLE SarlaccLevSpecialPc[7] = {0};
+void *SarlaccLevelBuilditsPc[2] = {0};
+GIZMO_PC *SarlaccObstMirrorBallPc = NULL;
+GIZMO_PC *SarlaccForceMirrorBallPc = NULL;
+
+f32 DeathStarZapSizeWidthPc = 1.0f;
+f32 DeathStarZapSizeLengthPc = 1.0f;
+f32 DeathStarZapWidthBiasPc = 0.01f;
+f32 DeathStarZapEndWidthPc = 1.5f;
+i32 DeathStarZapLaserTypePc = 0;
+
+/* Original episodeVI.cpp private owner, PC 0x0088a668, two player timers. */
+static f32 slowDownTimer[2] = {0};
+f32 FireDeltaPositionPc = 0.0f;
+
+f32 __cdecl DeathStar2BattleFire_GetSlowDownMul(GAMEOBJECT *object) {
+    i32 player;
+    if (object == NULL || (object->field_280 != 0 && object->field_280 != 1))
+        return 1.0f;
+    player = object->field_280;
+    if (slowDownTimer[player] < 0.0f)
+        slowDownTimer[player] = 0.0f;
+    return (f32)((3.0 - (f64)slowDownTimer[player]) / 3.0);
+}
+
+extern i32 DrawBossHitPointsTwoRowsPc;
+
+void __cdecl EmperorFightA_Panel(WORLDINFO *world) {
+    DrawBossHitPointsTwoRowsPc = 1;
+    if (LevGameObject[0] != NULL && LevAIMessage[0] != NULL && LevAIMessage[0]->value == 1.0f)
+        DrawBossHitPoints(LevGameObject[0]);
+}
+
+/* Native Emperor floor packet and private controls. */
+typedef struct emperor_update_packet_pc_s {
+    i32 state;
+    u8 enabled, zap, player_floor_mask, reserved;
+} EMPEROR_UPDATE_PACKET_PC;
+STATIC_ASSERT(sizeof(EMPEROR_UPDATE_PACKET_PC) == 8);
+STATIC_ASSERT(offsetof(EMPEROR_UPDATE_PACKET_PC, player_floor_mask) == 6);
+void __cdecl EmperorFightA_UpdateFloorObstaclesPc(void) {
+    EMPEROR_UPDATE_PACKET_PC *packet = (EMPEROR_UPDATE_PACKET_PC *)emperorfighta_netpacket;
+    switch (packet->state) {
+        case 1:
+            GizObstacle_PlayForwards(LevGizObst[1]);
+            GizObstacle_PlayForwards(LevGizObst[2]);
+            GizObstacle_PlayForwards(LevGizObst[3]);
+            break;
+        case 2:
+            GizObstacle_PlayForwards(LevGizObst[1]);
+            GizObstacle_PlayBackwards(LevGizObst[2]);
+            GizObstacle_PlayBackwards(LevGizObst[3]);
+            break;
+        case 3:
+            GizObstacle_PlayForwards(LevGizObst[1]);
+            GizObstacle_PlayBackwards(LevGizObst[2]);
+            GizObstacle_PlayForwards(LevGizObst[3]);
+            break;
+        case 0:
+        case 4:
+            GizObstacle_PlayBackwards(LevGizObst[1]);
+            GizObstacle_PlayBackwards(LevGizObst[2]);
+            GizObstacle_PlayBackwards(LevGizObst[3]);
+            break;
+    }
+}
+
+void __cdecl JabbasPalaceA_Init(WORLDINFO *world) {
+    NuSpecialFind(world->current_gscn, &LevHSpecial[0], "grill_02", 1);
+}
+
+void __cdecl JabbasPalaceA_Reset(WORLDINFO *world) {
+    TerSurface[14].flags = 0xa040;
+    TerSurface[9].flags = 0x2040;
+}
+
+void __cdecl JabbasPalaceB_Init(WORLDINFO *world) {
+    LevGizObst[0] = GizObstacle_FindByName(world->giz_obstacle_sys, "obstacle5");
+    LevBlowUp[0] = GizmoBlowUp_FindByName(world, "prison_stone1");
+}
+
+void __cdecl JabbasPalaceB_Reset(WORLDINFO *world) {
+    TerSurface[14].flags = 0xa040;
+    TerSurface[9].flags = 0x2040;
+}
+
+void __cdecl JabbasPalaceD_Reset(WORLDINFO *world) {
+    TerSurface[14].flags = 0xa040;
+    TerSurface[9].flags = 0x2040;
+}
+
+void __cdecl KillBossNewLevel(i32 id, i32 unused_4, f32 delay, i32 level_index);
+STATIC_ASSERT(offsetof(GAMEOBJECT, hostility_group) == 0x28d);
+STATIC_ASSERT(offsetof(GAMEOBJECT, ai_opponent_exclusion_mask) == 0xeb8);
+#define RANCOR_PLAYER_IN_AREA_PC(player, world, n)                                                                     \
+    (U64_PAIR((player)->ai_area_mask) &                                                                                \
+     (i64)(i32)(1u << (((i32)((u32)LevArea[n] - (u32)(world)->ai_sys->areas) >> 6) & 31)))
+
+void __cdecl JabbasPalaceE_Update(WORLDINFO *world) {
+    i32 i;
+    GAMEOBJECT *player;
+    GIZMOBLOWUP_PC *blowup;
+    u8 *flags = (u8 *)LevFlag;
+    if (!netclient) {
+        if (FreePlay)
+            KillBossCompleteLevel(id_RANCOR, 0, 0.3f);
+        else
+            KillBossNewLevel(id_RANCOR, 0, 0.3f, LevelFixupSlotPc0087b2b0->index);
+    }
+    if (LevGameObject[0] != NULL) {
+        LevGameObject[0]->ai_opponent_exclusion_mask[0] = 0;
+        LevGameObject[0]->ai_opponent_exclusion_mask[1] = 0;
+        if (aicreature_sets_alive[0] != 0) {
+            for (i = 0; i < 8; ++i) {
+                player = (GAMEOBJECT *)Player[i];
+                if (player != NULL)
+                    U64_PAIR(LevGameObject[0]->ai_opponent_exclusion_mask) |= (u64)1 << player->hostility_group;
+            }
+        } else {
+            for (i = 0; i < 8; ++i) {
+                player = (GAMEOBJECT *)Player[i];
+                if (player != NULL && ((LevArea[0] != NULL && RANCOR_PLAYER_IN_AREA_PC(player, world, 0)) ||
+                                       (LevArea[1] != NULL && RANCOR_PLAYER_IN_AREA_PC(player, world, 1)) ||
+                                       (LevArea[2] != NULL && RANCOR_PLAYER_IN_AREA_PC(player, world, 2))))
+                    U64_PAIR(LevGameObject[0]->ai_opponent_exclusion_mask) |= (u64)1 << player->hostility_group;
+            }
+        }
+    }
+    blowup = LevGizmo[0] != NULL ? (GIZMOBLOWUP_PC *)LevGizmo[0]->object : NULL;
+    if (blowup != NULL && (blowup->status_flags & 1) != 0) {
+        if (!flags[6]) {
+            PlaySfx("exp_minecart", &blowup->position);
+            flags[6] = 1;
+        }
+    } else {
+        flags[6] = 0;
+    }
+    blowup = LevGizmo[1] != NULL ? (GIZMOBLOWUP_PC *)LevGizmo[1]->object : NULL;
+    if (blowup != NULL && (blowup->status_flags & 1) != 0) {
+        if (!flags[7]) {
+            PlaySfx("exp_minecart", &blowup->position);
+            flags[7] = 1;
+        }
+    } else {
+        flags[7] = 0;
+    }
+}
+#undef RANCOR_PLAYER_IN_AREA_PC
+
+void __cdecl JabbasPalaceE_Panel(WORLDINFO *world) {
+    if (netclient == 0) {
+        if (LevGameObject[0] != NULL && LevAIMessage[0] != NULL && LevAIMessage[0]->value == 1.0f)
+            DrawBossHitPoints(LevGameObject[0]);
+        else
+            DrawBossHitPoints(NULL);
+    }
+}
+
+void __cdecl SarlaccPitB_SpecialUpdate(WORLDINFO *world) {
+    i32 index;
+    u32 bit;
+    NUSPECIALHANDLE *shown;
+    NUVEC *position;
+    NUINSTANIM_TIME_VIEW *animation;
+    (void)world;
+    for (index = 0; index < sarlaccdisco.count; ++index) {
+        NuSpecialSetVisibility(&sarlaccdisco.off[index], 0);
+        NuSpecialSetVisibility(&sarlaccdisco.flash[index], 0);
+        NuSpecialSetVisibility(&sarlaccdisco.select[index], 0);
+        NuSpecialSetVisibility(&sarlaccdisco.on[index], 0);
+        NuSpecialSetVisibility(&sarlaccdisco.finish[index], 0);
+        if (netclient)
+            sarlaccdisco.height = SeekValF(sarlaccdisco.height, SARLACC_PACKET->height, 8.0f);
+        else
+            SARLACC_PACKET->height = sarlaccdisco.height;
+        bit = 1u << index;
+        shown = NULL;
+        if (SARLACC_PACKET->off_mask & bit)
+            shown = &sarlaccdisco.off[index];
+        else if (SARLACC_PACKET->flash_mask & bit)
+            shown = &sarlaccdisco.flash[index];
+        else if (SARLACC_PACKET->select_mask & bit)
+            shown = &sarlaccdisco.select[index];
+        else if (SARLACC_PACKET->on_mask & bit)
+            shown = &sarlaccdisco.on[index];
+        else if (SARLACC_PACKET->finish_mask & bit)
+            shown = &sarlaccdisco.finish[index];
+        if (shown != NULL) {
+            NuSpecialSetVisibility(shown, 1);
+            position = NuSpecialGetDrawPos(shown);
+            if (position != NULL) {
+                position->y = sarlaccdisco.height;
+                NuSpecialSetDrawPos(shown, position);
+            }
+        }
+        position = NuSpecialGetDrawPos(&LevHSpecial[1]);
+        if (position != NULL) {
+            position->y = SarlaccDiscoBaseOffsetPc + sarlaccdisco.height;
+            NuSpecialSetDrawPos(&LevHSpecial[1], position);
+        }
+        if (SARLACC_PACKET->sound_mask & bit)
+            PlaySfx("Kam_DiscoFloorPanelOn", &NuSpecialGetDrawMtx(&sarlaccdisco.on[index])->translation);
+    }
+    if (SARLACC_PACKET->disco_active != 0) {
+        SetGizAIMessage(gizaimessagesys, "DiscoComplete", 1.0f, sarlaccdisco.complete_message);
+        PlayRadio("Speaker2", "Speaker21", 1);
+        PlayRadio("Speaker1", "Speaker11", 1);
+        PlayRadio("decks", "decks", 1);
+        if (SarlaccObstMirrorBallPc != NULL)
+            GizObstacle_PlayForwards((GIZOBSTACLE *)SarlaccObstMirrorBallPc->object);
+        if (NuSpecialExistsFn(&SarlaccLevSpecialPc[0]))
+            NuSpecialSetVisibility(&SarlaccLevSpecialPc[0], 1);
+        if (NuSpecialExistsFn(&SarlaccLevSpecialPc[1]))
+            NuSpecialSetVisibility(&SarlaccLevSpecialPc[1], 1);
+        if (NuSpecialExistsFn(&SarlaccLevSpecialPc[4])) {
+            animation = (NUINSTANIM_TIME_VIEW *)NuSpecialGetInstAnim(&SarlaccLevSpecialPc[4]);
+            if (animation != NULL)
+                animation->flags |= 1;
+        }
+        if (NuSpecialExistsFn(&SarlaccLevSpecialPc[5]) && NuSpecialExistsFn(&SarlaccLevSpecialPc[6])) {
+            animation = (NUINSTANIM_TIME_VIEW *)NuSpecialGetInstAnim(&SarlaccLevSpecialPc[5]);
+            if (animation != NULL)
+                animation->flags |= 1;
+            animation = (NUINSTANIM_TIME_VIEW *)NuSpecialGetInstAnim(&SarlaccLevSpecialPc[6]);
+            if (animation != NULL)
+                animation->flags |= 1;
+        }
+        if (SARLACC_PACKET->completion_sound_played == 0) {
+            PlaySfx("Kam_DiscoFloorPanelDone", NuSpecialGetDrawPos(&sarlaccdisco.off[0]));
+            SARLACC_PACKET->completion_sound_played = 1;
+        }
+    } else {
+        PlayRadio("Speaker2", "Speaker21", 0);
+        PlayRadio("Speaker1", "Speaker11", 0);
+        PlayRadio("decks", "decks", 0);
+        SARLACC_PACKET->completion_sound_played = 0;
+    }
+}
+
+void __cdecl SarlaccPitB_Init(WORLDINFO *world) {
+    char name[32];
+    i8 *index;
+    NUVEC *position;
+    (void)world;
+    memset(&sarlaccdisco, 0, sizeof(sarlaccdisco));
+    sarlaccb_netpacket = (SARLACC_BATTLE_MUSIC_VIEW_PC *)SetLevelHack(20);
+    index = &sarlaccdisco.count;
+    *index = 0;
+    for (;;) {
+        if (*index < 9)
+            sprintf(name, "dot_off_0%d", *index + 1);
+        else
+            sprintf(name, "dot_off_%d", *index + 1);
+        NuSpecialFind(WORLD->current_gscn, &sarlaccdisco.off[*index], name, 1);
+        if (*index < 9)
+            sprintf(name, "dot_flash_0%d", *index + 1);
+        else
+            sprintf(name, "dot_flash_%d", *index + 1);
+        NuSpecialFind(WORLD->current_gscn, &sarlaccdisco.flash[*index], name, 1);
+        if (*index < 9)
+            sprintf(name, "dot_select_0%d", *index + 1);
+        else
+            sprintf(name, "dot_select_%d", *index + 1);
+        NuSpecialFind(WORLD->current_gscn, &sarlaccdisco.select[*index], name, 1);
+        if (*index < 9)
+            sprintf(name, "dot_on_0%d", *index + 1);
+        else
+            sprintf(name, "dot_on_%d", *index + 1);
+        NuSpecialFind(WORLD->current_gscn, &sarlaccdisco.on[*index], name, 1);
+        if (*index < 9)
+            sprintf(name, "dot_finish_0%d", *index + 1);
+        else
+            sprintf(name, "dot_finish_%d", *index + 1);
+        NuSpecialFind(WORLD->current_gscn, &sarlaccdisco.finish[*index], name, 1);
+        if (!NuSpecialExistsFn(&sarlaccdisco.off[*index]) || !NuSpecialExistsFn(&sarlaccdisco.flash[*index]) ||
+            !NuSpecialExistsFn(&sarlaccdisco.select[*index]) || !NuSpecialExistsFn(&sarlaccdisco.on[*index]) ||
+            !NuSpecialExistsFn(&sarlaccdisco.finish[*index]))
+            break;
+        if (*index == 0) {
+            position = NuSpecialGetPos(&sarlaccdisco.off[0]);
+            if (position != NULL) {
+                sarlaccdisco.initial_height = position->y;
+                sarlaccdisco.height = position->y;
+            }
+        }
+        ++*index;
+        if (*index >= 16)
+            break;
+    }
+    sarlaccdisco.area = AISysFindArea(WORLD->ai_sys, "DISCO");
+    NuSpecialFind(WORLD->current_gscn, &LevHSpecial[0], "force_engine_lump", 1);
+    NuSpecialFind(WORLD->current_gscn, &LevHSpecial[1], "disco_base", 1);
+}
+
+void __cdecl SarlaccPitB_Reset(WORLDINFO *world) {
+    i32 index;
+    sarlaccdisco.timer = 0.0f;
+    memset(sarlaccdisco.panel_state, 0, sizeof(sarlaccdisco.panel_state));
+    sarlaccdisco.phase = 0;
+    sarlaccdisco.first_panel = -1;
+    sarlaccdisco.second_panel = -1;
+    for (index = 0; index < sarlaccdisco.count; ++index) {
+        NuSpecialSetVisibility(&sarlaccdisco.off[index], 1);
+        NuSpecialSetVisibility(&sarlaccdisco.flash[index], 0);
+        NuSpecialSetVisibility(&sarlaccdisco.on[index], 0);
+        NuSpecialSetVisibility(&sarlaccdisco.finish[index], 0);
+    }
+    sarlaccdisco.help_message = SetGizAIMessage(gizaimessagesys, "HelpWithDisco", 0.0f, NULL);
+    sarlaccdisco.complete_message = SetGizAIMessage(gizaimessagesys, "DiscoComplete", 0.0f, NULL);
+    sarlaccdisco.state_message = SetGizAIMessage(gizaimessagesys, "DiscoState", 0.0f, NULL);
+    sarlaccdisco.off_obstacle = GizObstacle_FindByName(world->giz_obstacle_sys, "disco_off");
+    sarlaccdisco.on_obstacle = GizObstacle_FindByName(world->giz_obstacle_sys, "disco_on");
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[0], "floor_disco", 1);
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[1], "light1_a", 1);
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[2], "disco_ball1", 1);
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[3], "disco_ball2", 1);
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[4], "shutter_1", 1);
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[5], "jabba_door1", 1);
+    NuSpecialFind(world->current_gscn, &SarlaccLevSpecialPc[6], "jabba_door2", 1);
+    SarlaccForceMirrorBallPc = GizmoFindByName(world->gizmo_sys, force_gizmotype_id, "force5");
+    SarlaccObstMirrorBallPc = GizmoFindByName(world->gizmo_sys, obstacle_gizmotype_id, "obstacle5");
+    SarlaccLevelBuilditsPc[0] = GizBuildIt_Find(world, "buildit6");
+    SarlaccLevelBuilditsPc[1] = GizBuildIt_Find(world, "buildit4");
+    LevelLocator = AIPathFindLocator(world->ai_sys, "DiscoHelp");
+    if (NuSpecialExistsFn(&SarlaccLevSpecialPc[3]))
+        NuSpecialSetVisibility(&SarlaccLevSpecialPc[3], 0);
+    if (NuSpecialExistsFn(&SarlaccLevSpecialPc[0]))
+        NuSpecialSetVisibility(&SarlaccLevSpecialPc[0], 0);
+    if (NuSpecialExistsFn(&SarlaccLevSpecialPc[1]))
+        NuSpecialSetVisibility(&SarlaccLevSpecialPc[1], 0);
+    if (GizForce_Complete((GIZFORCE_PC *)SarlaccForceMirrorBallPc->object))
+        GizObstacle_Stop((GIZOBSTACLE *)SarlaccObstMirrorBallPc->object);
+}
+
+void __cdecl SarlaccPitC_Init(WORLDINFO *world) {
+    SarlaccPowerPc = 0;
+    SarlaccRechargingPc = 0;
+    SarlaccTargetShieldPc[0] = 0;
+    SarlaccTargetShieldPc[1] = 0;
+}
+
+void __cdecl NewTown_Init(WORLDINFO *world) {
+    LevGizmo[0] = GizmoFindByName(world->gizmo_sys, blowup_gizmotype_id, "dummy_exp8");
+}
+
+void __cdecl EndorBattleA_Init(WORLDINFO *world) {
+    NuSpecialFind(world->current_gscn, &LevHSpecial[0], "bbq_popnull", 1);
+}
+
+/* PC 0x00800358 / 0x0080035c: Endor barbecue smoke interval and countdown. */
+static f32 EndorBattleAPartTimePc = 0.75f;
+static f32 EndorBattleAPartTimerPc = 0.75f;
+
+void __cdecl EndorBattleA_Update(WORLDINFO *world) {
+    NUINSTANIM_TIME_VIEW *animation = (NUINSTANIM_TIME_VIEW *)NuSpecialGetInstAnim(&LevHSpecial[0]);
+    if (animation != NULL && (animation->flags & 1) != 0 && NuSpecialGetVisibilityFn(&LevHSpecial[0]) != 0) {
+        if (EndorBattleAPartTimerPc >= EndorBattleAPartTimePc)
+            AddPartDebris(WORLD->part_debris_sys, 7, NuSpecialGetDrawPos(&LevHSpecial[0]));
+        EndorBattleAPartTimerPc -= FRAMETIME;
+        if (EndorBattleAPartTimerPc <= 0.0f)
+            EndorBattleAPartTimerPc = EndorBattleAPartTimePc;
+    }
+}
+
+void __cdecl DeathStar2BattleA_AlwaysUpdate(WORLDINFO *world) {
+    if (FreePlay == 0 && LevelFixupSlotPc0087b284 != NULL)
+        other_level_override = LevelFixupSlotPc0087b284->index;
+}
+
+/* PC 0x0088ab2c: fairground party split locator. */
+static AILOCATOR_PC *FairgroundSplitPartyLocatorPc;
+
+void __cdecl FairgroundbadA_Init(WORLDINFO *world) {
+    FairgroundSplitPartyLocatorPc = AIPathFindLocator(world->ai_sys, "Split_Party");
+}
+
+void __cdecl FairgroundbadA_Draw(WORLDINFO *world) {
+}
+
+typedef struct JABBA_ANTINODE_VIEW_PC {
+    u8 unknown_00[0x40];
+    f32 base_radius;
+    f32 base_height;
+    u8 unknown_48[2];
+    u8 type;
+} JABBA_ANTINODE_VIEW_PC;
+STATIC_ASSERT(offsetof(JABBA_ANTINODE_VIEW_PC, type) == offsetof(AIANTINODE_PC, type));
+
+void __cdecl JabbasPalaceA_Update(WORLDINFO *world) {
+    NUVEC position = {-0.01503f, 0.7414f, 11.5824f};
+    JABBA_ANTINODE_VIEW_PC *antinode;
+    if (NuSpecialExistsFn(&LevHSpecial[0]) != 0 && NuSpecialGetVisibilityFn(&LevHSpecial[0]) == 0) {
+        antinode = (JABBA_ANTINODE_VIEW_PC *)AIAntinodeCreateSingleFrame(&position, 1.0f);
+        if (antinode != NULL) {
+            antinode->type = 2;
+            antinode->base_radius = 0.82443f;
+            antinode->base_height = 1.0f;
+        }
+    }
+}
+
+void __cdecl JabbasPalaceE_Init(WORLDINFO *world) {
+    LevGizmo[0] = GizmoFindByName(world->gizmo_sys, blowup_gizmotype_id, "prox_explo1");
+    LevGizmo[1] = GizmoFindByName(world->gizmo_sys, blowup_gizmotype_id, "prox_explo2");
+    ((u8 *)LevFlag)[6] = 0;
+    ((u8 *)LevFlag)[7] = 0;
+}
+
+void __cdecl SarlaccPitA_Reset(WORLDINFO *world) {
+    LevSafePlatID[0] = -1;
+    if (NuSpecialFind(world->current_gscn, &LevHSpecial[0], "float_skiff_2", 1) != 0 && world->terrain != NULL)
+        LevSafePlatID[0] = FindPlatInst(NuSpecialGetInstanceix(&LevHSpecial[0]));
+}
+
+typedef struct LEGOCITY_PICKUP_PC {
+    u8 unknown_00[8];
+    NUVEC position;
+    u8 unknown_14[3];
+    u8 flags;
+    u8 type_id;
+    u8 unknown_19[0x24 - 0x19];
+    u8 collected;
+    u8 unknown_25[0x2c - 0x25];
+} LEGOCITY_PICKUP_PC;
+STATIC_ASSERT(sizeof(LEGOCITY_PICKUP_PC) == 0x2c);
+
+typedef struct LEGOCITY_PICKUPSYS_PC {
+    LEGOCITY_PICKUP_PC *pickups;
+    u8 unknown_04[4];
+    i32 count;
+} LEGOCITY_PICKUPSYS_PC;
+
+/* PC 0x0088a58c..0x0088a58f and 0x0088a6ec/0x0088a6ed: bonus level vehicle ride flags. */
+static u8 prevOnFireTruck = 0;
+static u8 prevOnLifeBoat = 0;
+static u8 prevOnMoonCar = 0;
+static u8 prevOnTractor = 0;
+static u8 prevOnTaunTaun = 0;
+static u8 prevOnTownCar = 0;
+
+extern i16 CharacterFixupIdPc007f1a7c;
+extern i16 CharacterFixupIdPc007f1a88;
+
+void LegoCity_Update(WORLDINFO *world) {
+    LEGOCITY_PICKUPSYS_PC *pickup_system;
+    LEGOCITY_PICKUP_PC *pickup;
+    GAMEOBJECT *object;
+    i32 index;
+    u8 onTractor = 0;
+    u8 onTaunTaun = 0;
+    u8 onMoonCar = 0;
+    u8 onTownCar = 0;
+    u8 changedTractor = 0;
+    u8 changedTaunTaun = 0;
+    u8 changedMoonCar = 0;
+    u8 changedTownCar = 0;
+    if (world == NULL)
+        return;
+    pickup_system = (LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys;
+    if (pickup_system == NULL)
+        return;
+    for (index = 0; index < 8; ++index) {
+        object = (GAMEOBJECT *)Player[index];
+        if (!(object != NULL && (object->flags_1fc_word & 0x1000) != 0 && object->dead == 0 && object->rider != NULL &&
+              object->rider->character_context == 0x3b)) {
+            continue;
+        }
+        if (object->id == (u16)id_TRACTOR) {
+            onTractor = 0xff;
+            changedTractor = ~prevOnTractor;
+        } else if (object->id == (u16)id_TAUNTAUN) {
+            onTaunTaun = 0xff;
+            changedTaunTaun = ~prevOnTaunTaun;
+        } else if (object->id == (u16)id_MOONCAR) {
+            onMoonCar = 0xff;
+            changedMoonCar = ~prevOnMoonCar;
+        } else if (object->id == (u16)CharacterFixupIdPc007f1a7c) {
+            onTownCar = 0xff;
+            changedTownCar = ~prevOnTownCar;
+        }
+    }
+    if (onTractor == 0)
+        changedTractor = prevOnTractor;
+    if (onTaunTaun == 0)
+        changedTaunTaun = prevOnTaunTaun;
+    if (onMoonCar == 0)
+        changedMoonCar = prevOnMoonCar;
+    if (onTownCar == 0)
+        changedTownCar = prevOnTownCar;
+    prevOnTractor = onTractor;
+    prevOnTaunTaun = onTaunTaun;
+    prevOnMoonCar = onMoonCar;
+    prevOnTownCar = onTownCar;
+    if ((changedTractor | changedTaunTaun | changedMoonCar | changedTownCar) == 0) {
+        return;
+    }
+    pickup = pickup_system->pickups;
+    for (index = 0; pickup != NULL && index < ((LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys)->count;
+         ++index, ++pickup) {
+        if ((pickup->flags & 8) == 0) {
+            switch (pickup->type_id) {
+                case 3:
+                    pickup->collected = onTractor;
+                    break;
+                case 4:
+                    pickup->collected = onTaunTaun;
+                    break;
+                case 5:
+                    pickup->collected = onMoonCar;
+                    break;
+                case 6:
+                    pickup->collected = onTownCar;
+                    break;
+            }
+        }
+    }
+}
+
+void NewTown_Update(WORLDINFO *world) {
+    LEGOCITY_PICKUPSYS_PC *pickup_system;
+    LEGOCITY_PICKUP_PC *pickup;
+    GAMEOBJECT *object;
+    i32 index;
+    u8 onTaunTaun = 0;
+    u8 onFireTruck = 0;
+    u8 onLifeBoat = 0;
+    u8 changedTaunTaun = 0;
+    u8 changedFireTruck = 0;
+    u8 changedLifeBoat = 0;
+    if (world == NULL)
+        return;
+    pickup_system = (LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys;
+    if (pickup_system == NULL)
+        return;
+    for (index = 0; index < 8; ++index) {
+        object = (GAMEOBJECT *)Player[index];
+        if (!(object != NULL && (object->flags_1fc_word & 0x1000) != 0 && object->dead == 0 && object->rider != NULL &&
+              object->rider->character_context == 0x3b)) {
+            continue;
+        }
+        if (object->id == (u16)id_TAUNTAUN) {
+            onTaunTaun = 0xff;
+            changedTaunTaun = ~prevOnTaunTaun;
+        } else if (object->id == (u16)id_FIRETRUCK) {
+            onFireTruck = 0xff;
+            changedFireTruck = ~prevOnFireTruck;
+        } else if (object->id == (u16)CharacterFixupIdPc007f1a88) {
+            onLifeBoat = 0xff;
+            changedLifeBoat = ~prevOnLifeBoat;
+        }
+    }
+    if (onTaunTaun == 0)
+        changedTaunTaun = prevOnTaunTaun;
+    if (onFireTruck == 0)
+        changedFireTruck = prevOnFireTruck;
+    if (onLifeBoat == 0)
+        changedLifeBoat = prevOnLifeBoat;
+    prevOnTaunTaun = onTaunTaun;
+    prevOnFireTruck = onFireTruck;
+    prevOnLifeBoat = onLifeBoat;
+    if ((changedTaunTaun | changedFireTruck | changedLifeBoat) == 0) {
+        return;
+    }
+    pickup = pickup_system->pickups;
+    for (index = 0; pickup != NULL && index < ((LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys)->count;
+         ++index, ++pickup) {
+        if ((pickup->flags & 8) == 0) {
+            switch (pickup->type_id) {
+                case 2:
+                    pickup->collected = onTaunTaun;
+                    break;
+                case 3:
+                    pickup->collected = onFireTruck;
+                    break;
+                case 4:
+                    pickup->collected = onLifeBoat;
+                    break;
+            }
+        }
+    }
+}
+
+void __cdecl LegoCity_Reset(WORLDINFO *world) {
+    LEGOCITY_PICKUP_PC *pickup;
+    i32 i;
+    prevOnTaunTaun = 0;
+    prevOnTractor = 0;
+    prevOnMoonCar = 0;
+    prevOnTownCar = 0;
+    pickup = ((LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys)->pickups;
+    for (i = 0; pickup != NULL && i < ((LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys)->count; i++, pickup++) {
+        if ((pickup->flags & 8) == 0) {
+            switch (pickup->type_id) {
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                    pickup->collected = 0;
+                    break;
+            }
+        }
+    }
+}
+
+void __cdecl NewTown_Reset(WORLDINFO *world) {
+    u32 seed = 17;
+    LEGOCITY_PICKUP_PC *pickup;
+    i32 i;
+    f32 x;
+    f32 z;
+    prevOnTaunTaun = 0;
+    prevOnFireTruck = 0;
+    prevOnLifeBoat = 0;
+    pickup = ((LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys)->pickups;
+    for (i = 0; pickup != NULL && i < ((LEGOCITY_PICKUPSYS_PC *)world->pickup_runtime_sys)->count; i++, pickup++) {
+        if ((pickup->flags & 8) == 0) {
+            switch (pickup->type_id) {
+                case 2:
+                case 3:
+                case 4:
+                    pickup->collected = 0;
+                    break;
+            }
+        }
+        if (pickup->type_id == 4) {
+            x = (f32)(NuRandFloatSeeded(&seed) * 4.0 - 7.656 - 1.5);
+            z = (f32)(NuRandFloatSeeded(&seed) * 4.0 - 5.871 - 1.5);
+            pickup->position.x = x;
+            pickup->position.z = z;
+        }
+    }
+}
+
+void __cdecl DeathStar2BattleFire_SetSlowDownMul(GAMEOBJECT *object) {
+    i8 index;
+    if (WORLD->current_level == DEATHSTAR2BATTLEE_LDATA || WORLD->current_level == DEATHSTAR2BATTLEF_LDATA ||
+        WORLD->current_level == DEATHSTAR2BATTLEG_LDATA) {
+        if (object != NULL) {
+            index = (i8)object->field_280;
+            if (index == 0 || index == 1) {
+                object->velocity = v000;
+                slowDownTimer[index] = 3.0f;
+            }
+        }
+    }
+}
+
+static void DeathStar2BattleFire_UpdateSlowDownMul(f32 dt) {
+    i32 index;
+    for (index = 0; index < 2; ++index) {
+        if (slowDownTimer[index] > 0.0f)
+            slowDownTimer[index] -= dt;
+    }
+}
+
+void __cdecl DeathStar2BattleFire_Update(WORLDINFO *world) {
+    u16 yaw = 0;
+    u16 pitch = 0;
+    NUVEC point = v000;
+    NUMTX matrix;
+    NUVEC difference;
+    f32 choice;
+    f32 along;
+    f32 nearest_distance = 1000000000.0f;
+    GAMEOBJECT *nearest = NULL;
+    i32 effect;
+    i32 index;
+    i16 y_rotation;
+    i16 z_rotation;
+    f32 distance;
+
+    DeathStar2BattleFire_UpdateSlowDownMul(FRAMETIME);
+    if (Player[0] != NULL)
+        FireDeltaPositionPc = (f32)((f64)((GAMEOBJECT *)Player[0])->character_data->game_character->run_speed * 1.25);
+    else
+        FireDeltaPositionPc = 30.0f;
+
+    choice = (f32)((f64)NuFloatRand((NURAND *)&GAMERAND) * 4.0);
+    if (choice < 1.0f)
+        effect = 33;
+    else if (choice < 2.0f)
+        effect = 48;
+    else if (choice < 3.0f)
+        effect = 35;
+    else
+        effect = 36;
+    along = (f32)((f64)NuFloatRand((NURAND *)&GAMERAND) * 0.1f + (f64)fireSplinePos.normalized_position);
+    PointAlongSpline(LevelCodeSpline[0], along, &point, &yaw, &pitch, 0);
+    y_rotation = (i16)qrand();
+    z_rotation = (i16)qrand();
+    AddVariableShotDebrisEffectTimed1(world->game_debris_sys->entries[effect].effect, &point, 90, FRAMETIME, z_rotation,
+                                      y_rotation, NULL);
+    NuMtxSetIdentity(&matrix);
+    PointAlongSpline(LevelCodeSpline[0], fireSplinePos.normalized_position, &point, &yaw, &pitch, 0);
+    NuMtxPreRotateY(&matrix, yaw);
+    NuMtxTranslate(&matrix, &fireSplinePos.position);
+    if (fireSplinePos.normalized_position < 1.0f)
+        NuSpecialSetDrawMtx(&LevHSpecial[0], &matrix);
+    else
+        NuSpecialSetVisibility(&LevHSpecial[0], 0);
+    if (fireBackPos.normalized_position <= 0.0f)
+        fireBackPos = fireSplinePos;
+
+    for (index = 0; index < 8; ++index) {
+        if (Player[index] != NULL && (((GAMEOBJECT *)Player[index])->field_e20 & 0x20) == 0) {
+            NuVecSub(&difference, &((GAMEOBJECT *)Player[index])->position, &fireSplinePos.position);
+            NuVecRotateY(&difference, &difference, -(i32)yaw);
+            if (difference.z < nearest_distance) {
+                nearest_distance = difference.z;
+                if (difference.z < 0.0f)
+                    nearest = (GAMEOBJECT *)Player[index];
+            }
+            if (difference.z < 0.0f) {
+                i32 no_hurt = objhitobj_nohurtsfx;
+                if (((GAMEOBJECT *)Player[index])->dead != 0)
+                    fireSpeedScale = 0.2f;
+                AddVariableShotDebrisEffectTimed3(world->game_debris_sys->entries[115].effect, &nearest->position,
+                                                  &nearest->velocity, 40, FRAMETIME, NULL, NULL);
+                if ((((GAMEOBJECT *)Player[index])->flags_1f8 & 0x40000) == 0) {
+                    objhitobj_nohurtsfx = 1;
+                    objhitobj_noimpactsfx = 1;
+                    ObjHitObj(NULL, (GAMEOBJECT *)Player[index], 1, 0, 0, 1);
+                    objhitobj_nohurtsfx = no_hurt;
+                }
+            }
+        }
+    }
+    if (fireSpeedScale < 1.0f && nearest == NULL)
+        fireSpeedScale = (f32)((f64)fireSpeedScale + (f64)FRAMETIME / 3.0);
+    else if ((f64)fireSpeedScale == (f64)0.2f && nearest != NULL)
+        fireSpeedScale = 0.2f;
+    else if (nearest_distance > 10.0f)
+        fireSpeedScale = 1.75f;
+    else
+        fireSpeedScale = 1.0f;
+
+    if (WORLD->current_level == DEATHSTAR2BATTLEE_LDATA || LevelTimer.time_elapsed > 0.5f) {
+        distance = (f32)((f64)FRAMETIME * (f64)FireDeltaPositionPc * (f64)fireSpeedScale);
+        MoveSplinePosition(&fireSplinePos, distance);
+    }
+    distance = (f32) - ((f64)FRAMETIME * (f64)FireDeltaPositionPc);
+    MoveSplinePosition(&fireBackPos, distance);
+    if ((f64)NuFloatRand((NURAND *)&GAMERAND) > (f64)0.95f) {
+        switch ((i32)((f64)NuFloatRand((NURAND *)&GAMERAND) * 3.0)) {
+            case 1:
+                PlaySfx("explode_SDest", &fireSplinePos.position);
+                break;
+            case 2:
+                PlaySfx("explode_SDG", &fireSplinePos.position);
+                break;
+            default:
+                PlaySfx("exp_asteroid", &fireSplinePos.position);
+                break;
+        }
+    }
+    PlaySfx("env_lantern_lp", &fireSplinePos.position);
+}
+
+void __cdecl DeathStar2BattleFire_Init(WORLDINFO *world) {
+    VehicleSlowdownCallbackPc = DeathStar2BattleFire_SetSlowDownMul;
+    LevelCodeSpline[0] = NuSplineFind(world->current_gscn, "fire");
+    NuSpecialFind(WORLD->current_gscn, &LevHSpecial[0], "fire_cube", 0);
+    InitSplinePosition(&fireSplinePos, LevelCodeSpline[0], 0.0f, 0);
+    InitSplinePosition(&fireBackPos, LevelCodeSpline[0], 0.0f, 0);
+    runningTotalPos = 0.0f;
+    fireSpeedScale = 1.0f;
+}
+
+void __cdecl DeathStar2BattleD_Init(WORLDINFO *world) {
+    char name[256];
+    i32 i;
+    GIZMO_PC *obstacle;
+    LevGizmo[0] = GizmoFindByName(world->gizmo_sys, blowup_gizmotype_id, "reactor1");
+    for (i = 1; i < 7; i++) {
+        sprintf(name, "lecnode_%i1", i);
+        LevGizmo[i] = GizmoFindByName(world->gizmo_sys, blowup_gizmotype_id, name);
+        sprintf(name, "obstacle%d", i);
+        obstacle = (GIZMO_PC *)GizmoFindByName(world->gizmo_sys, obstacle_gizmotype_id, name);
+        if (obstacle != NULL && obstacle->object != NULL)
+            LevGizObst[i] = (GIZOBSTACLE *)obstacle->object;
+    }
+    LevGizmo[7] = GizmoFindByName(world->gizmo_sys, blowup_gizmotype_id, "shield_inner1");
+    ((u8 *)LevFlag)[5] = 0;
+}
+
+GIZMOBLOWUP_PC *__cdecl DeathStar2BattleD_InZapRange(GAMEOBJECT *object) {
+    GIZMOBLOWUP_PC *nearest = NULL;
+    f32 nearest_distance;
+    i32 i;
+    if (object == NULL || !(object->flags_1fc_word & 0x80) || object->dead)
+        return NULL;
+    nearest_distance = 225.0f;
+    for (i = 1; i < 7; ++i) {
+        GIZMO_PC *gizmo = LevGizmo[i];
+        GIZMOBLOWUP_PC *blowup;
+        f32 distance;
+        if (gizmo == NULL || gizmo->object == NULL)
+            continue;
+        blowup = (GIZMOBLOWUP_PC *)gizmo->object;
+        if ((blowup->status_flags & 0x800000) && !(blowup->status_flags & 1) && LevGizObst[i] != NULL &&
+            LevGizObst[i]->anim_set->state != 0) {
+            distance = NuVecDistSqr(&object->collision_position, &blowup->mid_position, NULL);
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest = blowup;
+            }
+        }
+    }
+    return nearest;
+}
+
+void __cdecl DeathStar2BattleD_Update(WORLDINFO *world) {
+    GIZMO_PC *shield_gizmo;
+    GIZMOBLOWUP_PC *shield, *blowup;
+    GAMEOBJECT *player;
+    NUVEC shield_position, position, direction, colour, delta;
+    NUVEC *mid;
+    f32 radius, length;
+    i32 angle, i;
+    u8 *flags = (u8 *)LevFlag;
+    (void)world;
+    if (flags[0] != 0 && qrand() < 0x800)
+        NewRumbleAllPlayers((f32)((f64)qrand() * (f64)0.000015259021893143654f), 0.0f, 0, 0);
+    shield_gizmo = LevGizmo[7];
+    if (shield_gizmo != NULL) {
+        shield = (GIZMOBLOWUP_PC *)shield_gizmo->object;
+        if (shield != NULL && (shield->status_flags & 1)) {
+            if ((i32)AreaTimer.time_elapsed % 3 == 0 && (i32)AreaTimer.last_time_elapsed % 3 != 0 &&
+                NuFloatRand((NURAND *)&GAMERAND) < 0.5f) {
+                angle = qrand();
+                shield_position = shield->mid_position;
+                direction.x = NuTrigTable[((angle + 0x4000) >> 1) & 0x7fff];
+                direction.y = 0.0f;
+                direction.z = NuTrigTable[(angle >> 1) & 0x7fff];
+                AddPickups(0, 0, 1, 0, &shield_position, &direction, 3.0f, -1,
+                           (f32)((f64)NuFloatRand((NURAND *)&GAMERAND) * 15.0 + 10.0), 2000000.0f, NULL, 1, 0);
+            }
+            return;
+        }
+    }
+    for (i = 0; i < 8; ++i) {
+        player = (GAMEOBJECT *)Player[i];
+        if (player == NULL || player->dynamic_light_id == -1)
+            continue;
+        blowup = DeathStar2BattleD_InZapRange(player);
+        if (blowup == NULL)
+            continue;
+        rtlDynamicEnable(((GAMEOBJECT *)Player[i])->dynamic_light_id, 1);
+        mid = &blowup->mid_position;
+        radius = (f64)NuVecDist(mid, &((GAMEOBJECT *)Player[i])->collision_position, &delta) * 0.5;
+        rtlDynamicSetRadii(((GAMEOBJECT *)Player[i])->dynamic_light_id, radius, (f32)((f64)radius + 5.0));
+        qrand();
+        colour.x = 0.0f;
+        if (qrand() < 0x8000)
+            colour.y = 2.0f;
+        else
+            colour.y = 0.25f;
+        colour.z = colour.y;
+        rtlDynamicSetColours(((GAMEOBJECT *)Player[i])->dynamic_light_id, &colour, NULL);
+        player = (GAMEOBJECT *)Player[i];
+        position.x = player->collision_position.x + (f64)delta.x * 0.5;
+        position.y = player->collision_position.y + (f64)delta.y * 0.5;
+        position.z = player->collision_position.z + (f64)delta.z * 0.5;
+        rtlDynamicSetPos(player->dynamic_light_id, &position);
+        length = NuVecDist(&((GAMEOBJECT *)Player[i])->collision_position, mid, &delta);
+        NuLgtLaser(DeathStarZapLaserTypePc, DeathStarZapSizeWidthPc, DeathStarZapSizeLengthPc, DeathStarZapWidthBiasPc,
+                   mid, &delta, 0xff808040, DeathStarZapEndWidthPc, length);
+        NewRumble(((GAMEOBJECT *)Player[i])->pad->bound_pad,
+                  (f32)((f64)qrand() * (f64)0.000015259021893143654f * (f64)0.3f), 0);
+        if (qrand() < 0x1000)
+            NewBuzzFrames(((GAMEOBJECT *)Player[i])->pad->bound_pad, 1, 0);
+        PlaySfx("ForceLightningLp", &((GAMEOBJECT *)Player[i])->collision_position);
+        DisorientateCode((GAMEOBJECT *)Player[i], mid, 225.0f);
+    }
+}
+
+f32 SarlaccDiscoHeightPc = 1.27f;
+f32 SarlaccDiscoSeekPc = 2.0f;
+f32 SarlaccDiscoTimePc = 40.0f;
+f32 SarlaccDiscoTimeoutPc = 2.5f;
+f32 SarlaccDiscoRadiusPc = 0.2f;
+#pragma section(".sarlrw", read, write)
+__declspec(allocate(".sarlrw")) static NUVEC sarlacc_lump_position = {0};
+__declspec(allocate(".sarlrw")) static f32 sarlacc_engine_timer = 0.0f;
+
+static i32 SarlaccDiscoPickPanel(i32 state, i32 exclude) {
+    i32 candidates[16];
+    i32 count = 0;
+    i32 index;
+    i32 panel_count = sarlaccdisco.count;
+    for (index = 0; index < panel_count; ++index)
+        if (index != exclude && (i8)sarlaccdisco.panel_state[index] == state)
+            candidates[count++] = index;
+    return count != 0 ? candidates[NuRand(NULL) % count] : -1;
+}
+
+void __cdecl SarlaccPitB_Update(WORLDINFO *world) {
+    i32 index;
+    if (netclient == 0) {
+        GIZMO_PC *panel;
+        i32 ready = 0;
+        SARLACC_PACKET->sound_mask = 0;
+        SetGizAIMessage(gizaimessagesys, "HelpWithDisco", 0.0f, sarlaccdisco.help_message);
+        SetGizAIMessage(gizaimessagesys, "DiscoComplete", 0.0f, sarlaccdisco.complete_message);
+        SetGizAIMessage(gizaimessagesys, "DiscoState", (f32)sarlaccdisco.phase, sarlaccdisco.state_message);
+        panel = (GIZMO_PC *)GizmoFindByName(world->gizmo_sys, gizspecial_gizmotype_id, "qaz_panel2");
+        GizmoGetOutput(world->gizmo_sys, panel, 0, 0);
+        if (GizBuildIt_AtEnd(SarlaccLevelBuilditsPc[0]) && GizBuildIt_AtEnd(SarlaccLevelBuilditsPc[1]) &&
+            ((struct GIZSPECIAL_s *)panel->object)->anim_set->state == 2) {
+            if (sarlaccdisco.complete_message->value == 0.0f)
+                SetGizAIMessage(gizaimessagesys, "discoflooropen", 1.0f, NULL);
+            ready = 1;
+        }
+        switch (sarlaccdisco.phase) {
+            case 0:
+                SARLACC_PACKET->disco_active = 0;
+                if (NuSpecialExistsFn(&SarlaccLevSpecialPc[0]) && ready) {
+                    GAMEOBJECT *object = player;
+                    i32 occupied = 0;
+                    if (object != NULL) {
+                        i32 mask = (i32)(1u << ((sarlaccdisco.area - world->ai_sys->areas) & 31));
+                        occupied =
+                            (object->ai_area_mask[0] & (u32)mask) | (object->ai_area_mask[1] & (u32)(mask >> 31));
+                    }
+                    if (!occupied) {
+                        object = player2;
+                        if (object != NULL) {
+                            i32 mask = (i32)(1u << ((sarlaccdisco.area - world->ai_sys->areas) & 31));
+                            occupied =
+                                (object->ai_area_mask[0] & (u32)mask) | (object->ai_area_mask[1] & (u32)(mask >> 31));
+                        }
+                    }
+                    if (occupied) {
+                        sarlaccdisco.timer = 0.0f;
+                        sarlaccdisco.phase = 1;
+                        sarlaccdisco.first_panel = (i8)SarlaccDiscoPickPanel(0, -1);
+                        sarlaccdisco.second_panel = (i8)SarlaccDiscoPickPanel(0, sarlaccdisco.first_panel);
+                        if (sarlaccdisco.first_panel != -1 && sarlaccdisco.second_panel != -1) {
+                            sarlaccdisco.panel_state[sarlaccdisco.first_panel] = 1;
+                            sarlaccdisco.panel_state[sarlaccdisco.second_panel] = 1;
+                        }
+                    }
+                }
+                break;
+            case 1: {
+                i32 controlled_panel = -1;
+                i32 occupied[2];
+                i32 pass;
+                SARLACC_PACKET->disco_active = 0;
+                if (!ready) {
+                    SarlaccPitB_Reset(world);
+                    break;
+                }
+                for (pass = 0; pass < 2; ++pass) {
+                    i8 *selected = &sarlaccdisco.first_panel + pass;
+                    i32 previous = (i8)sarlaccdisco.panel_state[*selected];
+                    NUVEC *position;
+                    sarlaccdisco.panel_state[*selected] = 1;
+                    occupied[pass] = 0;
+                    position = NuSpecialGetPos(&sarlaccdisco.flash[*selected]);
+                    for (index = 0; index < 8; ++index) {
+                        GAMEOBJECT *object = (GAMEOBJECT *)Player[index];
+                        if (object != NULL && (object->flags_1fc_word & 0x1001) == 0x1001 && object->field_281 != 0) {
+                            f32 dx = position->x - object->position.x;
+                            f32 dz = position->z - object->position.z;
+                            f32 distance = dx * dx + dz * dz;
+                            if (distance < SarlaccDiscoRadiusPc * SarlaccDiscoRadiusPc) {
+                                occupied[pass] = 1;
+                                sarlaccdisco.panel_state[*selected] = 2;
+                                if (object == player)
+                                    controlled_panel = *selected;
+                                break;
+                            }
+                        }
+                    }
+                    if (previous != (i8)sarlaccdisco.panel_state[*selected] &&
+                        sarlaccdisco.panel_state[*selected] == 2) {
+                        sarlaccdisco.last_selected_position =
+                            &NuSpecialGetDrawMtx(&sarlaccdisco.on[*selected])->translation;
+                        SARLACC_PACKET->sound_mask |= 1 << *selected;
+                    }
+                }
+                if (occupied[0] && occupied[1]) {
+                    sarlaccdisco.timer = 0.0f;
+                    sarlaccdisco.panel_state[sarlaccdisco.first_panel] = 3;
+                    sarlaccdisco.panel_state[sarlaccdisco.second_panel] = 3;
+                    sarlaccdisco.first_panel = (i8)SarlaccDiscoPickPanel(0, -1);
+                    sarlaccdisco.second_panel = (i8)SarlaccDiscoPickPanel(0, sarlaccdisco.first_panel);
+                    if (sarlaccdisco.first_panel == -1 || sarlaccdisco.second_panel == -1) {
+                        sarlaccdisco.phase = 2;
+                        for (index = 0; index < sarlaccdisco.count; ++index)
+                            sarlaccdisco.panel_state[index] = 4;
+                    } else {
+                        sarlaccdisco.panel_state[sarlaccdisco.first_panel] = 1;
+                        sarlaccdisco.panel_state[sarlaccdisco.second_panel] = 1;
+                    }
+                } else {
+                    sarlaccdisco.timer += FRAMETIME;
+                    if (sarlaccdisco.timer > SarlaccDiscoTimeoutPc) {
+                        sarlaccdisco.timer = 0.0f;
+                        for (index = 0; index < 2; ++index) {
+                            i32 selected = SarlaccDiscoPickPanel(3, -1);
+                            if (selected != -1)
+                                sarlaccdisco.panel_state[selected] = 0;
+                        }
+                    }
+                    if (player2 == NULL && LevelLocator != NULL) {
+                        GAMEOBJECT *partner = (GAMEOBJECT *)Player[0];
+                        if (partner == player)
+                            partner = (GAMEOBJECT *)Player[1];
+                        if (partner != NULL) {
+                            NUVEC *help_position = NULL;
+                            if (controlled_panel == sarlaccdisco.first_panel)
+                                help_position = NuSpecialGetPos(&sarlaccdisco.flash[sarlaccdisco.second_panel]);
+                            else if (controlled_panel == sarlaccdisco.second_panel)
+                                help_position = NuSpecialGetPos(&sarlaccdisco.flash[sarlaccdisco.first_panel]);
+                            if (help_position != NULL) {
+                                SetGizAIMessage(gizaimessagesys, "HelpWithDisco", 1.0f, sarlaccdisco.help_message);
+                                ((AILOCATOR_PC *)LevelLocator)->position.x = help_position->x;
+                                ((AILOCATOR_PC *)LevelLocator)->position.z = help_position->z;
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            case 2:
+                SARLACC_PACKET->disco_active = 1;
+                sarlaccdisco.timer += FRAMETIME;
+                if (sarlaccdisco.timer > SarlaccDiscoTimePc || !ready) {
+                    SARLACC_PACKET->disco_active = 0;
+                    SarlaccPitB_Reset(world);
+                    return;
+                }
+                break;
+        }
+        if (sarlaccdisco.phase != 0) {
+            f32 amount =
+                (SarlaccDiscoHeightPc - sarlaccdisco.height) / (SarlaccDiscoHeightPc - sarlaccdisco.initial_height);
+            f32 rate;
+            f32 seek;
+            amount = amount < 0.0f ? 0.0f : amount > 1.0f ? 1.0f : amount;
+            rate = (f32)(1.0 - ((f64)NuTrigTable[((i32)((f64)amount * 32768.0 + 16384.0) >> 1) & 0x7fff] + 1.0) * 0.5);
+            seek = rate * SarlaccDiscoSeekPc;
+            sarlaccdisco.height = SeekValF(sarlaccdisco.height, SarlaccDiscoHeightPc, seek);
+        }
+        SARLACC_PACKET->off_mask = 0;
+        SARLACC_PACKET->flash_mask = 0;
+        SARLACC_PACKET->select_mask = 0;
+        SARLACC_PACKET->on_mask = 0;
+        SARLACC_PACKET->finish_mask = 0;
+        for (index = 0; index < sarlaccdisco.count; ++index) {
+            switch ((i8)sarlaccdisco.panel_state[index]) {
+                case 0:
+                    SARLACC_PACKET->off_mask |= 1 << index;
+                    break;
+                case 1:
+                    SARLACC_PACKET->flash_mask |= 1 << index;
+                    break;
+                case 2:
+                    SARLACC_PACKET->select_mask |= 1 << index;
+                    break;
+                case 3:
+                    SARLACC_PACKET->on_mask |= 1 << index;
+                    break;
+                case 4:
+                    SARLACC_PACKET->finish_mask |= 1 << index;
+                    break;
+            }
+        }
+    }
+    if (((u8 *)LevFlag)[0] == 0 && NuSpecialGetVisibilityFn(&LevHSpecial[0])) {
+        NUVEC *position = NuSpecialGetDrawPos(&LevHSpecial[0]);
+        sarlacc_engine_timer = 0.05f;
+        sarlacc_lump_position = *position;
+        ((u8 *)LevFlag)[0] = 1;
+    }
+    if (((u8 *)LevFlag)[0] != 0) {
+        f32 z;
+        sarlacc_engine_timer -= FRAMETIME;
+        if (sarlacc_engine_timer <= 0.0f)
+            sarlacc_engine_timer = 0.1f;
+        z = (f32)((1.0 -
+                   ((f64)NuTrigTable[((i32)((f64)sarlacc_engine_timer * 10.0 * 32768.0 + 16384.0) >> 1) & 0x7fff] +
+                    1.0) *
+                       0.5) *
+                      (f64)0.01f -
+                  (f64)0.005f + (f64)sarlacc_lump_position.z);
+        NuSpecialGetDrawPos(&LevHSpecial[0])->z = z;
+        PlaySfx("env_curtain_lp", NuSpecialGetDrawPos(&LevHSpecial[0]));
+    }
+    SarlaccPitB_SpecialUpdate(world);
+}
+
+STATIC_ASSERT(sizeof(EMPEROR_UPDATE_PACKET_PC) == 8);
+STATIC_ASSERT(offsetof(EMPEROR_UPDATE_PACKET_PC, state) == 0);
+STATIC_ASSERT(offsetof(EMPEROR_UPDATE_PACKET_PC, enabled) == 4);
+STATIC_ASSERT(offsetof(EMPEROR_UPDATE_PACKET_PC, zap) == 5);
+STATIC_ASSERT(offsetof(EMPEROR_UPDATE_PACKET_PC, player_floor_mask) == 6);
+STATIC_ASSERT(offsetof(GAMEOBJECT, dead) == 0x28b);
+STATIC_ASSERT(offsetof(GAMEOBJECT, field_1010) == 0x1010);
+STATIC_ASSERT(offsetof(GAMEOBJECT, flags_1f8) == 0x1f8);
+STATIC_ASSERT(offsetof(GAMEOBJECT, flags_ef4) == 0xef4);
+STATIC_ASSERT(offsetof(GAMEOBJECT, ai_area_mask) == 0x2b0);
+STATIC_ASSERT(offsetof(NUINSTANIM_TIME_VIEW, ltime) == 0x4c);
+STATIC_ASSERT(sizeof(AIAREA_PC) == 0x40);
+STATIC_ASSERT(offsetof(GAMEOBJECT, ai_packet) == 0x2c8);
+STATIC_ASSERT(offsetof(GAMEOBJECT, ai_packet) + offsetof(AIPACKET_PC, movement_look_target) == 0x4ac);
+extern i32 EmperorFloorRouteOnPc;
+extern f32 EmperorFloorRadiusPc;
+extern f32 EmperorFloorJitterPc;
+extern f32 EmperorFloorPushPc;
+extern f32 EmperorFloorSafeXMinimumPc;
+#define EMPEROR_PACKET ((EMPEROR_UPDATE_PACKET_PC *)emperorfighta_netpacket)
+#define EMPEROR_FLOOR_AREA_MASK(world, area)                                                                           \
+    ((u64)(i64)(i32)(1u << ((((i32)((u32)(area) - (u32)(world)->ai_sys->areas)) >> 6) & 31)))
+void __cdecl EmperorFightA_Update(WORLDINFO *world) {
+    i32 i;
+    i32 floor;
+    i32 floor_active;
+
+    if (LevGameObject[0] == NULL)
+        LevGameObject[0] = FindGameObject(id_THEEMPEROR, 1, 1, 0, 0);
+    if (FreePlay)
+        KillBossCompleteLevel(id_THEEMPEROR, 0, 0.0f);
+    else
+        KillBossPlayCutScene(id_THEEMPEROR, 0, 0.0f, "emperorfight_outro");
+    if (!netclient) {
+        GAMEOBJECT *player;
+        AIAREA_PC *area;
+        EMPEROR_UPDATE_PACKET_PC *packet;
+        i32 message_one;
+        GIZAIMESSAGE *message;
+
+        EMPEROR_PACKET->player_floor_mask = 0;
+        player = (GAMEOBJECT *)Player[0];
+        if (player != NULL && !player->dead && player->field_1010 <= 0.0f) {
+            area = LevArea[0];
+            if (area == NULL || !(U64_PAIR(player->ai_area_mask) & EMPEROR_FLOOR_AREA_MASK(world, area)))
+                goto emperor_second_player_mask;
+            EMPEROR_PACKET->player_floor_mask |= 1;
+        }
+        area = LevArea[0];
+    emperor_second_player_mask:
+        player = (GAMEOBJECT *)Player[1];
+        if (player != NULL && !player->dead && player->field_1010 <= 0.0f && area != NULL &&
+            (U64_PAIR(player->ai_area_mask) & EMPEROR_FLOOR_AREA_MASK(world, area))) {
+            EMPEROR_PACKET->player_floor_mask |= 2;
+        }
+        message = LevAIMessage[1];
+        message_one = message->value == 1.0f;
+        packet = (EMPEROR_UPDATE_PACKET_PC *)emperorfighta_netpacket;
+        if (message_one && packet->player_floor_mask != 0) {
+            if (packet->zap) {
+                f64 frame;
+                frame = FRAMETIME;
+                eFloor_timer += frame;
+                switch (packet->state) {
+                    case 1:
+                    case 3:
+                        if (eFloor_timer > 2.0f) {
+                            packet->state = 2;
+                            eFloor_timer = 0.0f;
+                        }
+                        break;
+                    case 2:
+                        if (eFloor_timer > 3.0f) {
+                            packet->state = 3;
+                            eFloor_timer = 0.0f;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            } else {
+                packet->zap = 1;
+                EMPEROR_PACKET->state = 1;
+                eFloor_timer = 0.0f;
+            }
+        } else if (message->value == 2.0f) {
+            packet->zap = 0;
+            EMPEROR_PACKET->state = 4;
+        }
+    }
+    for (i = 0; i < 2; ++i) {
+        GAMEOBJECT *player;
+        player = (GAMEOBJECT *)Player[i];
+        if (player != NULL && player->character_context == 0x42)
+            player->character_context = -1;
+    }
+    if (netclient && EMPEROR_PACKET->zap && EMPEROR_PACKET->player_floor_mask && LevGameObject[0] != NULL) {
+        AILOCATOR_PC *locator;
+        NUVEC hands[2], end, delta;
+        locator = AIPathFindLocator(world->ai_sys, "Zap");
+
+        ForceLightning_Origin(LevGameObject[0], &hands[0], &hands[1]);
+        end = locator->position;
+        end.x = (f32)(((f64)0.2f - (f64)NuRandFloat() * (f64)0.4f) + (f64)end.x);
+        end.z = (f32)(((f64)0.2f - (f64)NuRandFloat() * (f64)0.4f) + (f64)end.z);
+        for (i = 0; i < 2; ++i) {
+            f32 distance;
+            if ((f64)hands[i].y == 1000000000.0) {
+                continue;
+            }
+            distance = NuVecDist(&end, &hands[i], &delta);
+            NuLgtLaser(lightning_type, lightning_sizew[0], lightning_sizel[0], lightning_sizewab[0], &hands[i], &delta,
+                       lightning_col[0], lightning_endw[0], distance);
+            PlaySfx("ForceLightningLp", &locator->position);
+        }
+        LevGameObject[0]->ai_packet.movement_look_target = &locator->position;
+    }
+    floor_active = 0;
+    if (hspecial_efloor != NULL && EMPEROR_PACKET->player_floor_mask) {
+        for (floor = 0; floor < 20; ++floor) {
+            NUINSTANIM_TIME_VIEW *animation;
+            NUVEC *floor_position;
+            f64 radius;
+            animation = (NUINSTANIM_TIME_VIEW *)NuSpecialGetInstAnim(&hspecial_efloor[floor]);
+            if (animation == NULL || !(animation->ltime > 1.0f))
+                continue;
+            floor_position = NuSpecialGetDrawPos(&hspecial_efloor[floor]);
+            floor_active = 1;
+            radius = EmperorFloorRadiusPc;
+            for (i = 0; i < 2; ++i) {
+                GAMEOBJECT *player;
+                f32 dx;
+                f32 negative_radius;
+                f32 dz;
+                f64 velocity_x;
+                f64 push;
+                NUVEC floor_end, player_end, delta;
+                f64 jitter;
+                f64 random;
+                f64 floor_x;
+                f64 clamp_radius;
+                f64 upper;
+                f64 floor_y;
+                GAMEOBJECT *jitter_player;
+                f32 height;
+                i32 random_integer;
+                f32 distance;
+                NUVEC *sound_position;
+                i32 sound;
+                player = ((GAMEOBJECT *)Player[i]);
+                if (player->dead || !(player->field_1010 <= 0.0f) || !(EMPEROR_PACKET->player_floor_mask & (1 << i)))
+                    continue;
+                if ((i8)player->flags_1fc_word < 0) {
+                    i32 invincible;
+                    invincible = Player_HasInvincibility(player);
+                    radius = EmperorFloorRadiusPc;
+                    if (invincible)
+                        continue;
+                }
+                player = ((GAMEOBJECT *)Player[i]);
+                if (!(player->position.y > floor_position->y))
+                    continue;
+                dx = player->position.x - floor_position->x;
+                if (!(dx < radius))
+                    continue;
+                negative_radius = (f32)-radius;
+                if (!(dx > negative_radius))
+                    continue;
+                dz = player->position.z - floor_position->z;
+                if (!(dz < radius && dz > negative_radius))
+                    continue;
+                player->character_context = 0x42;
+                player = (GAMEOBJECT *)Player[i];
+                if (!(player->flags_1f8 & 0x40000))
+                    ObjHitObj(NULL, player, 1, 0, 0, 1);
+                player = ((GAMEOBJECT *)Player[i]);
+                velocity_x = player->velocity.x;
+                push = EmperorFloorPushPc;
+                if (!(dx <= 0.0f))
+                    player->velocity.x = (f32)(velocity_x + push);
+                else
+                    player->velocity.x = (f32)(velocity_x - push);
+                player = (GAMEOBJECT *)Player[i];
+                if (dz > 0.0f)
+                    player->velocity.z = (f32)(player->velocity.z + push);
+                else
+                    player->velocity.z = (f32)(player->velocity.z - push);
+
+                floor_end.x = player->collision_position.x;
+                jitter = EmperorFloorJitterPc;
+                random = NuRandFloat();
+                floor_end.x = (f32)((jitter - (random + random) * jitter) + (f64)floor_end.x);
+                floor_x = floor_position->x;
+                clamp_radius = EmperorFloorRadiusPc;
+                upper = floor_x + clamp_radius;
+                if (floor_end.x > upper) {
+                    floor_end.x = (f32)upper;
+                } else {
+                    f64 lower;
+                    lower = floor_position->x - clamp_radius;
+                    if (lower > floor_end.x)
+                        floor_end.x = (f32)lower;
+                }
+                floor_y = floor_position->y;
+                jitter_player = (GAMEOBJECT *)Player[i];
+                floor_end.y = (f32)floor_y;
+                floor_end.z = jitter_player->collision_position.z;
+                jitter = EmperorFloorJitterPc;
+                random = NuRandFloat();
+                floor_end.z = (f32)((jitter - (random + random) * jitter) + (f64)floor_end.z);
+                clamp_radius = EmperorFloorRadiusPc;
+                upper = clamp_radius + floor_position->z;
+                if (floor_end.z > upper) {
+                    floor_end.z = (f32)upper;
+                } else {
+                    f64 lower;
+                    lower = floor_position->z - clamp_radius;
+                    if (lower > floor_end.z)
+                        floor_end.z = (f32)lower;
+                }
+                player = ((GAMEOBJECT *)Player[i]);
+                player_end.x = player->collision_position.x;
+                height = player->upper_position.y - player->lower_position.y;
+                random_integer = qrand();
+                player_end.y = (f32)(((f64)random_integer * 0.000015259021893143654) * ((f64)height * 0.5) +
+                                     ((f64)height * 0.25 + player->lower_position.y));
+                player_end.z = player->collision_position.z;
+                distance = NuVecDist(&player_end, &floor_end, &delta);
+                NuLgtLaser(testlaser_type, testlaser_sizew, testlaser_sizel, testlaser_sizewab, &floor_end, &delta,
+                           0xff808040, testlaser_endw, distance);
+                sound_position = &((GAMEOBJECT *)Player[i])->collision_position;
+                sound = GetSfxId("ForceLightningLp");
+                GameAudio_PlaySfxById(sound, sound_position, 0, 1);
+                break;
+            }
+        }
+        if (floor_active) {
+            GAMEOBJECT *player;
+            f64 minimum;
+            AIAREA_PC *area;
+            player = (GAMEOBJECT *)Player[0];
+            minimum = EmperorFloorSafeXMinimumPc;
+
+            if (!player->dead && player->field_1010 <= 0.0f) {
+                area = LevArea[0];
+                if (area == NULL || !(U64_PAIR(player->ai_area_mask) & EMPEROR_FLOOR_AREA_MASK(world, area)))
+                    goto emperor_second_safe_player;
+                if (!(player->collision_position.x < minimum))
+                    goto emperor_second_safe_player;
+                player->flags_ef4 |= 4;
+                ((GAMEOBJECT *)Player[0])->last_safe_position.x = (f32)minimum;
+                ((GAMEOBJECT *)Player[0])->respawn_position.x = (f32)minimum;
+            }
+            area = LevArea[0];
+        emperor_second_safe_player:
+            player = (GAMEOBJECT *)Player[1];
+            if (!player->dead && player->field_1010 <= 0.0f && area != NULL &&
+                (U64_PAIR(player->ai_area_mask) & EMPEROR_FLOOR_AREA_MASK(world, area)) &&
+                player->collision_position.x < minimum) {
+                player->flags_ef4 |= 4;
+                ((GAMEOBJECT *)Player[1])->last_safe_position.x = (f32)minimum;
+                ((GAMEOBJECT *)Player[1])->respawn_position.x = (f32)minimum;
+            }
+        }
+    }
+
+    if (!netclient && routemask_efloor_on && routemask_efloor_off) {
+        i32 update_routes;
+        i32 routes_on;
+        update_routes = 0;
+        routes_on = 0;
+        if (EMPEROR_PACKET->enabled || (floor_active && !EmperorFloorRouteOnPc)) {
+            EMPEROR_PACKET->enabled = 0;
+            EmperorFloorRouteOnPc = 1;
+            routes_on = 1;
+            update_routes = 1;
+        } else if (!floor_active && EmperorFloorRouteOnPc) {
+            EmperorFloorRouteOnPc = 0;
+            update_routes = 1;
+        }
+        if (update_routes != 0) {
+            GAMEOBJECT *boss;
+            for (i = 0; i < world->ai_sys->path_sys->active_path->connection_count; ++i) {
+                u16 route_mask;
+                route_mask = world->ai_sys->path_sys->active_path->connections[i].route_mask;
+                if (route_mask & routemask_efloor_on) {
+                    if (routes_on) {
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[0] &= 0x7fffffff;
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[1] &= 0x7fffffff;
+                    } else {
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[0] |= 0x80000000;
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[1] |= 0x80000000;
+                    }
+                } else if (route_mask & routemask_efloor_off) {
+                    if (!routes_on) {
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[0] &= 0x7fffffff;
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[1] &= 0x7fffffff;
+                    } else {
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[0] |= 0x80000000;
+                        world->ai_sys->path_sys->active_path->connections[i].traversal_flags[1] |= 0x80000000;
+                    }
+                }
+            }
+            for (i = 0; i < 2; ++i) {
+                GAMEOBJECT *player;
+                player = (GAMEOBJECT *)Player[i];
+                if (player != NULL && (player->flags_1fc_word & 0x1001) == 0x1001)
+                    AISysGetCharacterPathPos(WORLD->ai_sys, (APIOBJECT_PC *)player, &player->ai_packet, 0xff, 1);
+            }
+            boss = LevGameObject[0];
+            if (boss != NULL)
+                AISysGetCharacterPathPos(WORLD->ai_sys, (APIOBJECT_PC *)boss, &boss->ai_packet, 0xff, 1);
+        }
+    }
+    EmperorFightA_UpdateFloorObstaclesPc();
+    if (!((u8 *)LevFlag)[4]) {
+        for (i = 1; i < 5; ++i) {
+            if (!((u8 *)LevFlag)[i] && NuSpecialGetVisibilityFn(&LevHSpecial[i + 2])) {
+                PlaySfx("env_block_light_on", NuSpecialGetDrawPos(&LevHSpecial[i + 2]));
+                ((u8 *)LevFlag)[i] = 1;
+            }
+        }
+    }
+    for (i = 0; i < 12; ++i) {
+        if (NuSpecialGetVisibilityFn(&LevHSpecial[i + 30]) && !((u8 *)LevSfxFlag)[i]) {
+            PlaySfx("env_block_light_on", NuSpecialGetDrawPos(&LevHSpecial[i]));
+            ((u8 *)LevSfxFlag)[i] = 1;
+        } else if (!NuSpecialGetVisibilityFn(&LevHSpecial[i + 30])) {
+            ((u8 *)LevSfxFlag)[i] = 0;
+        }
+    }
+}
+
+#undef EMPEROR_FLOOR_AREA_MASK
+#undef EMPEROR_PACKET
