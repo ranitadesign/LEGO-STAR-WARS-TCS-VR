@@ -1,4 +1,5 @@
 #include "saga.h"
+#include "vr/vr.h"
 
 #include <float.h>
 #include <stdio.h>
@@ -658,6 +659,7 @@ static AIACTIONDEF_PC *AIActionFind(char *name) {
         }
     }
 
+    SAGA_VR_AI_MISSING("action", name)
     return NULL;
 }
 
@@ -678,6 +680,7 @@ static AICONDITIONDEF_PC *AIConditionFind(char *name) {
         }
     }
 
+    SAGA_VR_AI_MISSING("condition", name)
     return NULL;
 }
 
@@ -1288,6 +1291,7 @@ void __cdecl AIScriptSetState(AISCRIPTPROCESS_PC *processor, AISTATE_PC *state) 
         if ((processor->flags & 4) == 0)
             processor->unknown_b2 = 0;
         processor->flags &= ~4u;
+        SAGA_VR_AI_STATE(processor, state);
         processor->state = state;
         processor->action_node = NULL;
         processor->next_state = NULL;

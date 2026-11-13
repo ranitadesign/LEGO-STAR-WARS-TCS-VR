@@ -64,6 +64,9 @@ Right stick up/down .... free play: next / previous character
 A ...................... jump / confirm in menus
 Right trigger .......... attack / shoot
 Swing right hand ....... lightsaber swing
+Hold the blade in the way of a shot or a blade to block it ("Blocked!" shows)
+Double jump, then point the lit saber down ... Jedi ground slam
+Swing left hand ........ punch (characters with a gun) - hit an enemy within reach
 Right grip ............. lightsaber on / off
 B, X or left trigger ... special (Force, build) - hold it, like the original
 Y ...................... swap character

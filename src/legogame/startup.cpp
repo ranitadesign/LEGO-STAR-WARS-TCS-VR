@@ -1,4 +1,5 @@
 #include "saga.h"
+#include "vr/vr.h"
 extern "C" char *LoadPermSaveIconSpecialPc;
 extern "C" void __cdecl TextInputGlyphNamePc(i32, char *);
 extern "C" void __cdecl RegisterLswGizmoTypesPc(VARIPTR *, VARIPTR *);
@@ -232,7 +233,7 @@ extern "C" {
 
             if (intro_timer < 3.8f && language_timer >= 3.3f && LoadPerm_LanguageSelect == 3 && ready_timer >= 1.0f &&
                 legal_timer >= 5.8f && Text_IsFontLoaded() != 0 && LoadPerm_StringsLoaded != 0) {
-                if (StartupGameFlag1 == 0 || INTROTEXT_ID != -1) {
+                if ((StartupGameFlag1 == 0 || INTROTEXT_ID != -1) && SAGA_VR_INTRO_GATE()) {
                     intro_timer += FRAMETIME;
                     if (intro_timer > 3.8f) {
                         intro_timer = 3.8f;

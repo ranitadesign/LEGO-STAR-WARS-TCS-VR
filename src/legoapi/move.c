@@ -4133,7 +4133,7 @@ static void ZapCode(GAMEOBJECT *object, i32 pressed, i32 retract_weapon) {
             animation = 0x16;
         }
 
-        nearest_distance = 0.36f;
+        nearest_distance = SAGA_VR_ZAP_RANGE(object, 0.36f);
         object->force_target = NULL;
         NuVecRotateY(&forward, &v001, object->movement_facing_angle);
         for (index = 0; index < HIGHGAMEOBJECT; ++index) {

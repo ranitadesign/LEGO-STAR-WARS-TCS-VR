@@ -152,6 +152,8 @@ void __cdecl SagaVrPadInject(i32 device, FRAME_SCANNED_PAD_PC *pad) {
         if (!SagaVrOnTitles())
             buttons |= (controller_buttons & SAGA_XR_BUTTON_JUMP) ? 0x40u : 0u;
         buttons |= (controller_buttons & SAGA_XR_BUTTON_ATTACK) ? 0x80u : 0u;
+        if (SagaVrSlamPress())
+            buttons |= 0x80u; /* saber pointed down after a double jump: the Jedi slam */
         buttons |= (controller_buttons & SAGA_XR_BUTTON_SPECIAL) ? 0x20u : 0u;
         buttons |= (controller_buttons & SAGA_XR_BUTTON_SWAP) ? 0x10u : 0u;
         buttons |= (controller_buttons & SAGA_XR_BUTTON_MENU) ? 0x800u : 0u;

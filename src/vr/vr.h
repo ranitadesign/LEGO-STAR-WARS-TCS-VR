@@ -80,6 +80,8 @@ extern "C" {
      * 5 seconds, leave" check (non-matching decompilation): the end-of-chapter screen hung on its
      * countdown. In the VR build the idle screen leaves after 5 seconds as that check intends. */
     i32 __cdecl SagaVrStatusIdle(i32 idle);
+    void __cdecl SagaVrAiState(AISCRIPTPROCESS_PC *processor, AISTATE_PC *state);
+    i32 __cdecl SagaVrIntroGate(void);
 #ifdef __cplusplus
 }
 #endif
@@ -161,7 +163,25 @@ extern "C" {
 #define SAGA_VR_RETURN_IF_NULL(pointer)                                                                                \
     if ((pointer) == NULL)                                                                                             \
         return;
+/* AI script loading: logs each condition/action a level script names that saga-pc does not implement (the script
+ * then skips it, which can leave characters waiting forever). Diagnostic only. */
+#define SAGA_VR_AI_MISSING(kind, name)                                                                                 \
+    if ((name) != NULL && (name)[0] != '{' && (name)[0] != '/')                                                        \
+    LOG_WARN("VR AI missing %s '%s' (script %s)", kind, (name) != NULL ? (name) : "?",                              \
+             aiscript_load_script != NULL && aiscript_load_script->name != NULL ? aiscript_load_script->name : "?");
+/* AIScriptSetState: logs state changes of the scripts named by saga_vr.ini ai_trace (diagnostic for AI that stalls). */
+#define SAGA_VR_AI_STATE(processor, state) SagaVrAiState(processor, state)
+/* Start-up: "A long time ago..." waits until the RanitaVR plate has been shown after the legal screen. */
+#define SAGA_VR_INTRO_GATE() SagaVrIntroGate()
+/* ZapCode (Jawa, Watto, Ugnaught, R2): the zapper only reaches a droid 0.6 units away, nearly touching. In first
+ * person, with the target hard to judge, player 0 reaches 2 units. Squared distance. */
+#define SAGA_VR_ZAP_RANGE(object, original)                                                                            \
+    ((object) == (GAMEOBJECT *)Player[0] && SagaVrFirstPersonActive() ? 4.0f : (original))
 #else
+#define SAGA_VR_AI_STATE(processor, state) ((void)0)
+#define SAGA_VR_INTRO_GATE() 1
+#define SAGA_VR_ZAP_RANGE(object, original) (original)
+#define SAGA_VR_AI_MISSING(kind, name)
 #define SAGA_VR_TURRET_DRAW_POS(object, fallback, original) (original)
 #define SAGA_VR_RETURN_IF_NULL(pointer)
 #define SAGA_VR_FACEON_COPY(packet, type)

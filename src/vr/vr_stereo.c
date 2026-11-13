@@ -12,6 +12,7 @@
  * The environment variable SAGA_VR_SIMULATE=1 forces simulated stereo (no runtime needed). */
 #include "vr/vr_internal.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,6 +98,41 @@ static f32 SagaVrIniFloat(const char *ini, const char *key, f32 fallback) {
     return text[0] != 0 ? (f32)atof(text) : fallback;
 }
 
+/* saga_vr.ini ai_trace: comma-separated parts of AI script names whose state changes are logged ("" = none). */
+static char SagaVrAiTrace[256] = "Maul,Jedi,Party";
+
+static i32 SagaVrAiTraced(const char *name) {
+    const char *part = SagaVrAiTrace;
+    char token[64];
+    while (name != NULL && *part != 0) {
+        i32 length = 0, i, j;
+        while (*part == ',' || *part == ' ')
+            ++part;
+        while (part[length] != 0 && part[length] != ',' && length < (i32)sizeof(token) - 1)
+            token[length] = part[length], ++length;
+        token[length] = 0;
+        part += length;
+        if (length == 0)
+            continue;
+        for (i = 0; name[i] != 0; ++i) {
+            for (j = 0; j < length && name[i + j] != 0 && tolower((u8)name[i + j]) == tolower((u8)token[j]); ++j)
+                ;
+            if (j == length)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+void __cdecl SagaVrAiState(AISCRIPTPROCESS_PC *processor, AISTATE_PC *state) {
+    const char *script = processor->script != NULL ? processor->script->name : NULL;
+    if (processor->state == state || !SagaVrAiTraced(script))
+        return;
+    LOG_INFO("VR AI %s (%p): %s -> %s", script, (void *)processor,
+             processor->state != NULL && processor->state->name != NULL ? processor->state->name : "-",
+             state->name != NULL ? state->name : "-");
+}
+
 void __cdecl SagaVrStereoInit(SAGA_VR_CONTROL *control) {
     char ini[MAX_PATH];
     char *slash;
@@ -121,6 +157,11 @@ void __cdecl SagaVrStereoInit(SAGA_VR_CONTROL *control) {
     control->saber_scale = SagaVrIniFloat(ini, "saber_scale", 1.0f);
     control->debug_keys = (i32)SagaVrIniFloat(ini, "debug_keys", 0.0f);
     control->smooth_turn = SagaVrIniFloat(ini, "smooth_turn", 0.0f);
+    {
+        char trace[sizeof(SagaVrAiTrace)];
+        GetPrivateProfileStringA("vr", "ai_trace", SagaVrAiTrace, trace, sizeof(trace), ini);
+        strcpy(SagaVrAiTrace, trace);
+    }
     control->hand_rotation[0][0] = SagaVrIniFloat(ini, "left_hand_yaw", 0.0f);
     control->hand_rotation[0][1] = SagaVrIniFloat(ini, "left_hand_pitch", 0.0f);
     control->hand_rotation[0][2] = SagaVrIniFloat(ini, "left_hand_roll", 0.0f);
@@ -407,10 +448,10 @@ i32 __cdecl SagaVrHandWorld(i32 hand, f32 *out) {
     return 1;
 }
 
-/* RanitaVR credit plate: after the opening logos, the first time the title screen comes up, the headset shows
+/* RanitaVR credit plate: after the legal screen, before "A long time ago in a galaxy far, far away....", the headset shows
  * RanitaVR.bmp (next to the executable; 32-bit, uncompressed) on a screen for SAGA_VR_PLATE_SECONDS. */
 #define SAGA_VR_PLATE_SECONDS 5.0
-static i32 SagaVrPlateState = 0; /* 0 waiting for the title screen, 1 showing, 2 done or unavailable */
+static i32 SagaVrPlateState = 0; /* 0 waiting for the legal screen to end, 1 showing, 2 done or unavailable */
 static i32 SagaVrPlateFrame = 0;
 static LARGE_INTEGER SagaVrPlateStart;
 static u8 *SagaVrPlatePixels; /* top-down BGRA */
@@ -469,12 +510,14 @@ static i32 SagaVrLoadPlate(void) {
     return 1;
 }
 
+/* Set by SagaVrIntroGate once the legal screen is over. */
+static i32 SagaVrPlateRequested = 0;
+
 /* Whether this frame shows the plate instead of the game. */
 static i32 SagaVrPlateActive(void) {
     LARGE_INTEGER now, frequency;
     if (SagaVrPlateState == 0) {
-        /* The title level is current from start-up; its menu only opens once the opening logos are over. */
-        if (WORLD == NULL || WORLD->current_level != TITLES_LDATA || !SagaVrMenuOpen())
+        if (!SagaVrPlateRequested)
             return 0;
         if (!SagaVrLoadPlate()) {
             SagaVrPlateState = 2;
@@ -495,6 +538,14 @@ static i32 SagaVrPlateActive(void) {
     SagaVrPlatePixels = NULL;
     LOG_INFO("VR plate: done");
     return 0;
+}
+
+/* Start-up loop, each frame once the legal screen is over: the plate shows first, then the game's
+ * "A long time ago in a galaxy far, far away...." may start (returns 1 when it may). */
+i32 __cdecl SagaVrIntroGate(void) {
+    SagaVrPlateRequested = 1;
+    SagaVrPlateActive();
+    return SagaVrPlateState == 2;
 }
 
 i32 __cdecl SagaVrStereoBegin(void) {

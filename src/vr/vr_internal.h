@@ -130,6 +130,8 @@ i32 __cdecl TriggerAutoSave(void);
 void __cdecl SagaVrFirstPersonAfterDraw(void);
 /* Motion saber: sends back enemy bolts crossing the lit blade (vr_saber.c). */
 void __cdecl SagaVrSaberDeflect(void);
+i32 __cdecl SagaVrSlamPress(void);
+void __cdecl SagaVrPunchUpdate(void);
 /* Registers the stubbed LSW end-of-chapter status screen once (vr_camera.c). */
 void __cdecl SagaVrRegisterStatusScreen(void);
 /* The character sitting on the vehicle player 0 rides or drives; NULL when not riding (vr_firstperson.c). */

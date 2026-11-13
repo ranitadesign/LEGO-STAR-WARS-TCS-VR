@@ -301,6 +301,7 @@ void __cdecl SagaVrFrameEnd(void) {
     SAGA_VR_CONTROL *control = SagaVrGetControl();
     SagaVrFirstPersonAfterDraw();
     SagaVrSaberDeflect();
+    SagaVrPunchUpdate();
     SagaVrRegisterStatusScreen();
     SagaVrLogFloor(control);
     if (Player[0] != NULL) {

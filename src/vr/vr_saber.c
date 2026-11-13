@@ -283,11 +283,26 @@ static i32 SagaVrPoseSaber(GAMEOBJECT *object, CHARACTER_MODEL_LAYERS_PC *model,
 
 /* Frame of the last blaster pose: its locators then follow the hand and give the barrel's direction. */
 static u32 SagaVrBlasterFrame;
+/* The barrel tilt of the last posed blaster (degrees about the grip's side axis); shots leave along it too. */
+static f32 SagaVrBlasterPitchUsed = -40.0f;
+
+typedef struct SAGA_VR_HANDS {
+    NUHGOBJ_EVAL_PC *hierarchy;
+    i32 tip[2];
+    i32 wrist[2];
+    f32 rest[2][9]; /* wrist rest orientation in model space, orthonormal rows (see geometric) */
+    i32 geometric;  /* rest is relative to the forearm frame instead of the grip axes */
+} SAGA_VR_HANDS;
+
+/* Hands of the current skeleton (SagaVrFindHands). */
+static SAGA_VR_HANDS SagaVrHands;
 
 /* A blaster (or any held weapon with a muzzle) in the right hand: the grip locator sits in the hand and
- * grip->muzzle points along the controller. The barrel runs along the grip locator's own axis, not along
- * that line (the grip sits below the barrel), so SagaVrBarrelAxis gives the direction to shoot. The game
- * holsters blasters between shots; in first person the weapon stays out. */
+ * grip->muzzle points along the controller. On pistols the grip locator sits in the handle, below the barrel, so
+ * that line runs above the barrel and blaster_pitch tilts it back down. When the grip locator is the weapon's
+ * origin (Watto's zapper, bowcasters, a Geonosian's blaster without a grip locator), the line is the barrel
+ * itself and needs no tilt: with it those weapons pointed up and shot diagonally. The game holsters blasters
+ * between shots; in first person the weapon stays out. */
 static i32 SagaVrPoseBlaster(GAMEOBJECT *object, CHARACTER_MODEL_LAYERS_PC *model, NUMTX *world, NUMTX *joints,
                              u8 *descendant) {
     SAGA_VR_CONTROL *control = SagaVrGetControl();
@@ -295,25 +310,41 @@ static i32 SagaVrPoseBlaster(GAMEOBJECT *object, CHARACTER_MODEL_LAYERS_PC *mode
     NUHGOBJ_EVAL_PC *hierarchy = model->hierarchy;
     NUHGOBJ_POI_PC *grip, *muzzle;
     f32 hand_world[16], difference[3];
+    NUHGOBJ_POI_PC origin_grip;
     i32 c;
     if (world == NULL || object->character_data == NULL || object->character_data->game_character == NULL)
         return 0;
     data = object->character_data->game_character;
-    if (data->weapon_joints[0] < 0 || data->weapon_shoot_joints[0] < 0 ||
-        model->points_of_interest[data->weapon_joints[0]] == NULL ||
-        model->points_of_interest[data->weapon_shoot_joints[0]] == NULL)
+    if (data->weapon_shoot_joints[0] < 0 || model->points_of_interest[data->weapon_shoot_joints[0]] == NULL)
         return 0;
-    grip = &hierarchy->points[hierarchy->point_index_map[data->weapon_joints[0]]];
     muzzle = &hierarchy->points[hierarchy->point_index_map[data->weapon_shoot_joints[0]]];
+    if (data->weapon_joints[0] >= 0 && model->points_of_interest[data->weapon_joints[0]] != NULL) {
+        grip = &hierarchy->points[hierarchy->point_index_map[data->weapon_joints[0]]];
+    } else {
+        /* No grip locator (a Geonosian's blaster): hold the weapon joint by its origin, if it hangs off the right
+         * arm (a muzzle on the head or body, as on droids and creatures, stays where it is). */
+        i32 joint = muzzle->joint_index, steps = 0, wrist = SagaVrHands.wrist[1];
+        while (joint >= 0 && joint < hierarchy->joint_count && joint != wrist && steps++ < 64)
+            joint = hierarchy->joints[joint].parent_index == 0xff ? -1 : hierarchy->joints[joint].parent_index;
+        if (wrist < 0 || joint != wrist)
+            return 0;
+        origin_grip = *muzzle;
+        origin_grip.matrix.m30 = origin_grip.matrix.m31 = origin_grip.matrix.m32 = 0.0f;
+        grip = &origin_grip;
+    }
     if (grip->joint_index != muzzle->joint_index || grip->joint_index >= hierarchy->joint_count)
         return 0;
     for (c = 0; c < 3; ++c)
         difference[c] = (&muzzle->matrix.m30)[c] - (&grip->matrix.m30)[c];
     if (SagaVrLength(difference) < 1e-4f || !SagaVrHandWorld(1, hand_world))
         return 0;
-    if (!SagaVrPoseAlongGrip(hierarchy, world, joints, descendant, grip, muzzle, hand_world,
-                             control->blaster_scale, 1, control->blaster_pitch))
-        return 0;
+    {
+        f32 pitch = grip == &origin_grip || SagaVrLength(&grip->matrix.m30) < 0.01f ? 0.0f : control->blaster_pitch;
+        if (!SagaVrPoseAlongGrip(hierarchy, world, joints, descendant, grip, muzzle, hand_world,
+                                 control->blaster_scale, 1, pitch))
+            return 0;
+        SagaVrBlasterPitchUsed = pitch;
+    }
     /* Out for the game too: otherwise a press only draws a weapon that already looks drawn, and never fires. */
     if ((object->flags_e20 & 0x10000) == 0)
         SetWeaponOut(object);
@@ -338,16 +369,6 @@ static i32 SagaVrJointDepth(NUHGOBJ_EVAL_PC *hierarchy, i32 joint) {
  * joints at the same depth whose positions mirror across x = 0 are the arm tips (Qui-Gon: 14 and 20),
  * preferring the deepest pair; the hand mesh hangs off each tip's parent, the wrist. The right hand is
  * on the -x side (or the one carrying the saber's blade locators). Index 0 = left, 1 = right. */
-typedef struct SAGA_VR_HANDS {
-    NUHGOBJ_EVAL_PC *hierarchy;
-    i32 tip[2];
-    i32 wrist[2];
-    f32 rest[2][9]; /* wrist rest orientation in model space, orthonormal rows (see geometric) */
-    i32 geometric;  /* rest is relative to the forearm frame instead of the grip axes */
-} SAGA_VR_HANDS;
-
-static SAGA_VR_HANDS SagaVrHands;
-
 static void SagaVrFindHands(NUHGOBJ_EVAL_PC *hierarchy, i32 saber_joint) {
     static f32 rest[256][16];
     u8 has_child[256];
@@ -1421,7 +1442,8 @@ void __cdecl SagaVrBoltAim(GAMEOBJECT *object, NUVEC *shot_position, NUMTX *matr
         return;
     /* Same barrel tilt as the held weapon (SagaVrPoseBlaster): the handle axis points above the aim. */
     {
-        f32 cp = (f32)cos(control->blaster_pitch * 0.017453293f), sp = (f32)sin(control->blaster_pitch * 0.017453293f);
+        f32 pitch = control->frame - SagaVrBlasterFrame <= 1 ? SagaVrBlasterPitchUsed : control->blaster_pitch;
+        f32 cp = (f32)cos(pitch * 0.017453293f), sp = (f32)sin(pitch * 0.017453293f);
         for (c = 0; c < 3; ++c)
             forward[c] = hand[8 + c] * cp + hand[4 + c] * sp;
     }
@@ -1430,7 +1452,9 @@ void __cdecl SagaVrBoltAim(GAMEOBJECT *object, NUVEC *shot_position, NUMTX *matr
         return;
     for (c = 0; c < 3; ++c)
         forward[c] /= length;
-    from_barrel = SagaVrBarrelAxis(object, forward);
+    /* Always along the controller, tilted like the posed weapon (SagaVrBlasterPitchUsed). */
+    from_barrel = 0;
+    (void)SagaVrBarrelAxis;
     delta[0] = shot_position->x - hand[12];
     delta[1] = shot_position->y - hand[13];
     delta[2] = shot_position->z - hand[14];
@@ -1507,7 +1531,8 @@ static f32 SagaVrSegmentDistance(const f32 *p0, const f32 *p1, const f32 *q0, co
  * incoming bolt ends and a reflected copy owned by the player flies at the shooter (aimed with the
  * game's intercept when the shooter is alive, otherwise mirrored off the blade). Bolts the game marks
  * as not deflectable (0x40, e.g. rockets) still hit. */
-#define SAGA_VR_BLOCK_RADIUS 0.06f /* blade half-thickness plus slack, game units (a minifig is ~0.42) */
+#define SAGA_VR_BLOCK_RADIUS 0.12f /* blade half-thickness plus generous slack, game units (a minifig is ~0.42); 0.06 was too strict */
+static void SagaVrBlockedMessage(void);
 
 void __cdecl SagaVrSaberDeflect(void) {
     GAMEOBJECT *player = SagaVrSaberPlayer();
@@ -1559,6 +1584,7 @@ void __cdecl SagaVrSaberDeflect(void) {
         angles.z = 0;
         NuMtxSetRotationXYVU0(&matrix, &angles);
         PlaySfx("SabDefBlas", &position); /* the game's sabre-deflects-blaster sound */
+        SagaVrBlockedMessage();
         Bolt_End(bolt, 0);
         reflected = Bolt_Add(player, &position, &matrix, bolt->type_id, 0);
         if (reflected != NULL)
@@ -1596,5 +1622,111 @@ void SagaVrBlockSabre(GAMEOBJECT *object) {
         clash_time = GlobalTimer.time_elapsed;
         position.x = hit[0], position.y = hit[1], position.z = hit[2];
         PlaySfx("SaberSaber01", &position);
+        SagaVrBlockedMessage();
+    }
+}
+
+/* "Blocked!" in the game's language, briefly in front of the player, when the VR blade stops a bolt or a blade
+ * (the block was easy to miss: only a sound). Text ids would need new game strings, so the words live here. */
+static void SagaVrBlockedMessage(void) {
+    static f32 last = -10.0f;
+    static char text[32];
+    const char *word;
+    if (GlobalTimer.time_elapsed - last < 0.5f && GlobalTimer.time_elapsed >= last)
+        return;
+    last = GlobalTimer.time_elapsed;
+    LOG_INFO("VR block: blocked");
+    switch (Text_Language) {
+        case 3:
+            word = "\xa1" "Bloqueado!";
+            break;
+        case 2:
+            word = "Bloqu\xe9 !";
+            break;
+        case 4:
+            word = "Geblockt!";
+            break;
+        case 5:
+            word = "Parato!";
+            break;
+        case 8:
+            word = "Blokeret!";
+            break;
+        default:
+            word = "Blocked!";
+            break;
+    }
+    strcpy(text, word);
+    AddFancyMessage(text, 0.0f, 0.3f, 0.6f, 0.8f, 1, 1);
+}
+
+/* Jedi slam: after a double jump, pointing the lit VR blade down presses attack, which the game turns into its
+ * slam (DoubleJump_JediSlam, jump_sequence 2) - the same as attacking in the air on a pad. */
+i32 __cdecl SagaVrSlamPress(void) {
+    GAMEOBJECT *player = SagaVrSaberPlayer();
+    PLAYERCHARACTERCONFIG_PC *data;
+    f32 blade[3], length;
+    i32 c;
+    if (player == NULL || !SagaVrSaberDriving() || !SagaVrGetControl()->saber_lit || SagaVrBladeScale < 0.9f ||
+        player->field_281 != 0 || player->jump_sequence != 2)
+        return 0;
+    data = player->character_data->game_character;
+    for (c = 0; c < 3; ++c)
+        blade[c] = (&player->locator_matrices[data->streak_joints[0][1]].m30)[c] -
+                   (&player->locator_matrices[data->streak_joints[0][0]].m30)[c];
+    length = SagaVrLength(blade);
+    return length > 1e-4f && blade[1] < -0.7f * length;
+}
+
+/* Characters with a gun (no saber) punch with the left hand: a fast swing (over SAGA_VR_PUNCH_SPEED m/s) that
+ * reaches an enemy hits it once per SAGA_VR_PUNCH_COOLDOWN, like the game's own close-range brawl. */
+#define SAGA_VR_PUNCH_SPEED 1.5f
+#define SAGA_VR_PUNCH_COOLDOWN 0.4f
+#define SAGA_VR_PUNCH_REACH 0.12f /* game units beyond the target's collision radius */
+
+void __cdecl SagaVrPunchUpdate(void) {
+    static f32 previous[3], previous_time = -1.0f, last_hit = -10.0f;
+    SAGA_VR_CONTROL *control = SagaVrGetControl();
+    GAMEOBJECT *player = (GAMEOBJECT *)Player[0], *target;
+    PLAYERCHARACTERCONFIG_PC *data;
+    f32 hand[16], now = GlobalTimer.time_elapsed, speed, delta[3], reach;
+    i32 i, c;
+    if (player == NULL || !control->first_person || !SagaVrFirstPersonActive() || !control->hand_valid[0] ||
+        SagaVrCinema() || player->character_data == NULL || player->character_data->game_character == NULL ||
+        player->dead != 0 || !SagaVrHandWorld(0, hand)) {
+        previous_time = -1.0f;
+        return;
+    }
+    data = player->character_data->game_character;
+    /* Only gun characters: sabers have their blade, others their own attacks. */
+    if (data->streak_joints[0][0] >= 0 || (data->weapon_shoot_joints[0] < 0 && data->weapon_joints[0] < 0)) {
+        previous_time = -1.0f;
+        return;
+    }
+    if (previous_time < 0.0f || now <= previous_time || now - previous_time > 0.2f) {
+        memcpy(previous, hand + 12, sizeof(previous));
+        previous_time = now;
+        return;
+    }
+    for (c = 0; c < 3; ++c)
+        delta[c] = hand[12 + c] - previous[c];
+    speed = SagaVrLength(delta) / (now - previous_time) / (control->fp_world_scale > 0.0f ? control->fp_world_scale : 1.0f);
+    memcpy(previous, hand + 12, sizeof(previous));
+    previous_time = now;
+    if (speed < SAGA_VR_PUNCH_SPEED || (now - last_hit < SAGA_VR_PUNCH_COOLDOWN && now >= last_hit))
+        return;
+    for (i = 0, target = Obj; i < HIGHGAMEOBJECT; ++i, ++target) {
+        if (target == player || target->dead != 0 || (target->flags_1fc_word & 0x1001) != 0x1001 ||
+            ((target->flags_1f8 ^ player->flags_1f8) & 0x10001) == 0)
+            continue;
+        for (c = 0; c < 3; ++c)
+            delta[c] = (&target->collision_position.x)[c] - hand[12 + c];
+        reach = target->collision_radius + SAGA_VR_PUNCH_REACH;
+        if (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2] > reach * reach)
+            continue;
+        last_hit = now;
+        LOG_INFO("VR punch: character %d at %.2f m/s", (i32)target->id, speed);
+        ObjHitObj(player, target, 1, (u16)ObjHitObj_Flags(player), 0, 1);
+        break;
     }
 }
